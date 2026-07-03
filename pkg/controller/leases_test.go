@@ -25,6 +25,7 @@ func (m memStore) UpsertLease(l *Lease) error {
 type fakeRuntime struct {
 	lastPrincipal string
 	lastImage     string
+	lastSSHKey    string
 	lastCourse    string
 	lastProblem   string
 }
@@ -32,6 +33,7 @@ type fakeRuntime struct {
 func (f *fakeRuntime) CreateService(principal, image, sshKey, course, problem string) (*ServiceResult, error) {
 	f.lastPrincipal = principal
 	f.lastImage = image
+	f.lastSSHKey = sshKey
 	f.lastCourse = course
 	f.lastProblem = problem
 	return &ServiceResult{ContainerID: "ctr-" + principal, Host: "10.0.0.5", Port: 2222}, nil
@@ -101,6 +103,9 @@ func TestCreateServiceWritesActiveLease(t *testing.T) {
 	}
 	if rt.lastCourse != "cs101" || rt.lastProblem != "hw1" {
 		t.Errorf("course/problem: %s/%s", rt.lastCourse, rt.lastProblem)
+	}
+	if rt.lastSSHKey != "ssh-rsa AAA..." {
+		t.Errorf("ssh_key: got %q", rt.lastSSHKey)
 	}
 
 	// Verify lease was written and is retrievable

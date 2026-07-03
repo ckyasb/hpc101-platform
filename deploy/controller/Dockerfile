@@ -5,6 +5,7 @@ WORKDIR /src
 COPY deploy/controller/go.controller.work ./go.work
 COPY pkg/lease/ ./pkg/lease/
 COPY pkg/controller/ ./pkg/controller/
+# pkg/runtime requires go >= 1.25 (Docker SDK transitive dep)
 COPY cmd/controller/ ./cmd/controller/
 WORKDIR /src/cmd/controller
 RUN CGO_ENABLED=0 go build -o /controller .

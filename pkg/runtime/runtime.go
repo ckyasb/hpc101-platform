@@ -1,6 +1,3 @@
-// Package runtime provides a Podman/Docker API client for the
-// hpc101-platform controller. Wraps the Docker Go SDK to create,
-// label, and manage svc- containers through the shared podman runtime.
 package runtime
 
 import (
@@ -9,16 +6,14 @@ import (
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/mount"
+	"github.com/docker/docker/api/types/nat"
 	"github.com/docker/docker/client"
 )
 
-// Client wraps the Docker Go SDK for the controller's podman runtime access.
 type Client struct {
 	cli *client.Client
 }
 
-// NewClient connects to the podman runtime at the given Docker-compatible endpoint.
-// endpoint is typically "tcp://podman-runtime.hpc101-runtime.svc.cluster.local:2375".
 func NewClient(endpoint string) (*Client, error) {
 	cli, err := client.NewClientWithOpts(client.WithHost(endpoint), client.WithAPIVersionNegotiation())
 	if err != nil {
@@ -27,32 +22,21 @@ func NewClient(endpoint string) (*Client, error) {
 	return &Client{cli: cli}, nil
 }
 
-// CreateContainerRequest carries the parameters to create a student service container.
 type CreateContainerRequest struct {
-	// Name is the container name (svc- prefixed per plan).
-	Name string
-	// Image is the container image (e.g., hpc101-platform/container:latest).
-	Image string
-	// Labels are the platform.io/* labels applied to the container.
-	Labels map[string]string
-	// CPU is the CPU quota in NanoCPUs (e.g., 500_000_000 for 0.5 CPU).
-	CPU int64
-	// MemoryMB is the memory limit in MB.
+	Name     string
+	Image    string
+	Labels   map[string]string
+	CPU      int64
 	MemoryMB int64
-	// SSHKey is the student's authorized key content.
-	SSHKey string
-	// MaxLife is the maximum lifetime duration.
-	// MaxLife time.Duration  // TODO: connect to lease store
+	SSHKey   string
 }
 
-// CreateResult contains the created container's metadata and endpoint.
 type CreateResult struct {
 	ContainerID string
 	Host        string
 	Port        uint16
 }
 
-// Required platform labels for all svc- containers.
 var requiredLabels = []string{
 	"platform.io/owner",
 	"platform.io/kind",
@@ -60,39 +44,36 @@ var requiredLabels = []string{
 	"platform.io/problem",
 }
 
-// CreateContainer creates an svc- container with platform labels and authorized SSH key.
-// Returns host:port endpoint reachable from the bastion.
 func (c *Client) CreateContainer(ctx context.Context, req CreateContainerRequest) (*CreateResult, error) {
-	// Enforce required platform labels
 	for _, k := range requiredLabels {
 		if _, ok := req.Labels[k]; !ok {
 			return nil, fmt.Errorf("runtime: missing required label %q on container %s", k, req.Name)
 		}
 	}
 	if req.Image == "" {
-		return nil, fmt.Errorf("runtime: Image is required")
+		return nil, fmt.Errorf("runtime: Image required")
 	}
 	if req.Name == "" {
-		return nil, fmt.Errorf("runtime: Name is required")
+		return nil, fmt.Errorf("runtime: Name required")
 	}
 
 	cfg := &container.Config{
 		Image:  req.Image,
 		Labels: req.Labels,
-		Env: []string{
-			fmt.Sprintf("HPC101_SSH_KEY=%s", req.SSHKey),
+		Env:    []string{fmt.Sprintf("HPC101_SSH_KEY=%s", req.SSHKey)},
+		ExposedPorts: nat.PortSet{
+			"2222/tcp": struct{}{},
 		},
 	}
 	hostCfg := &container.HostConfig{
-		Mounts: []mount.Mount{
-			{
-				Type:   mount.TypeTmpfs,
-				Target: "/tmp",
-				TmpfsOptions: &mount.TmpfsOptions{
-					SizeBytes: 256 * 1024 * 1024,
-				},
-			},
+		PortBindings: nat.PortMap{
+			"2222/tcp": []nat.PortBinding{{HostIP: "0.0.0.0", HostPort: "0"}}, // auto-allocate
 		},
+		Mounts: []mount.Mount{{
+			Type:   mount.TypeTmpfs,
+			Target: "/tmp",
+			TmpfsOptions: &mount.TmpfsOptions{SizeBytes: 256 * 1024 * 1024},
+		}},
 		Resources: container.Resources{
 			NanoCPUs: req.CPU,
 			Memory:   req.MemoryMB * 1024 * 1024,
@@ -100,21 +81,33 @@ func (c *Client) CreateContainer(ctx context.Context, req CreateContainerRequest
 	}
 	resp, err := c.cli.ContainerCreate(ctx, cfg, hostCfg, nil, nil, req.Name)
 	if err != nil {
-		return nil, fmt.Errorf("runtime: create container %s: %w", req.Name, err)
+		return nil, fmt.Errorf("runtime: create %s: %w", req.Name, err)
 	}
-	// Allocate a host SSH port — simplified: use container port 2222
-	return &CreateResult{ContainerID: resp.ID}, nil
+	if err := c.cli.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
+		return nil, fmt.Errorf("runtime: start %s: %w", safePrefix(resp.ID, 12), err)
+	}
+	insp, err := c.cli.ContainerInspect(ctx, resp.ID)
+	if err != nil {
+		return nil, fmt.Errorf("runtime: inspect %s: %w", safePrefix(resp.ID, 12), err)
+	}
+	host := insp.NetworkSettings.IPAddress
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	var port uint16
+	for _, bindings := range insp.NetworkSettings.Ports["2222/tcp"] {
+		if bindings.HostPort != "" {
+			p, _ := fmt.Sscanf(bindings.HostPort, "%d", &port) // only need 1 match
+			_ = p
+			break
+		}
+	}
+	if port == 0 {
+		port = 2222
+	}
+	return &CreateResult{ContainerID: resp.ID, Host: host, Port: port}, nil
 }
 
-// safePrefix safely returns min(len,12) chars of s.
-func safePrefix(s string, n int) string {
-	if len(s) < n {
-		n = len(s)
-	}
-	return s[:n]
-}
-
-// StartContainer starts a previously created container.
 func (c *Client) StartContainer(ctx context.Context, containerID string) error {
 	if err := c.cli.ContainerStart(ctx, containerID, container.StartOptions{}); err != nil {
 		return fmt.Errorf("runtime: start %s: %w", safePrefix(containerID, 12), err)
@@ -122,7 +115,6 @@ func (c *Client) StartContainer(ctx context.Context, containerID string) error {
 	return nil
 }
 
-// StopAndRemoveContainer stops and removes a container (cleanup).
 func (c *Client) StopAndRemoveContainer(ctx context.Context, containerID string) error {
 	if err := c.cli.ContainerStop(ctx, containerID, container.StopOptions{}); err != nil {
 		_ = c.cli.ContainerRemove(ctx, containerID, container.RemoveOptions{Force: true})
@@ -134,7 +126,11 @@ func (c *Client) StopAndRemoveContainer(ctx context.Context, containerID string)
 	return nil
 }
 
-// Close closes the Docker API client connection.
-func (c *Client) Close() error {
-	return c.cli.Close()
+func (c *Client) Close() error { return c.cli.Close() }
+
+func safePrefix(s string, n int) string {
+	if len(s) < n {
+		n = len(s)
+	}
+	return s[:n]
 }

@@ -26,13 +26,13 @@ type LeaseStore interface {
 
 // CreateServiceRequest carries the parameters to create a student service.
 type CreateServiceRequest struct {
-	Principal string
-	Image     string
-	SSHKey    string
-	Course    string
-	Problem   string
-	CPULimit  int64
-	MemoryMB  int64
+	Principal string `json:"principal"`
+	Image     string `json:"image"`
+	SSHKey    string `json:"ssh_key"`
+	Course    string `json:"course"`
+	Problem   string `json:"problem"`
+	CPULimit  int64  `json:"cpu_limit"`
+	MemoryMB  int64  `json:"memory_mb"`
 }
 
 // ServiceResult is returned when a service container is created and started.

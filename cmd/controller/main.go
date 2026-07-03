@@ -20,7 +20,7 @@ func (m memStore) UpsertLease(l *controller.Lease) error {
 }
 
 func main() {
-	h := controller.NewHandler(memStore{}, nil)
+	h := controller.NewHandler(memStore{}, nil) // runtime set in deploy (requires go >=1.25)
 	log.Println("controller listening on :8080")
 	if err := http.ListenAndServe(":8080", h); err != nil {
 		log.Fatalf("controller: %v", err)
