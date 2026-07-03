@@ -12,7 +12,7 @@ type serializedStore struct {
 	leases      map[string]*Lease
 	keys        map[string]string            // principal → public key
 	submissions map[string]*SubmissionRecord // submissionID → record
-	problemMap  map[string]string            // "course:problem" → csojProblemID
+	problemMap  map[string]string            // "course:contest:problem" → csojProblemID
 }
 
 func NewSerializedStore() *serializedStore {
@@ -156,7 +156,7 @@ func (s *serializedStore) AllSubmissions() []*SubmissionRecord {
 	return result
 }
 
-// MapProblem stores the CSOJ problem ID for a course+platform problem.
+// MapProblem stores the CSOJ problem ID for a course+contest+platform problem.
 func (s *serializedStore) MapProblem(course, contest, platformID, csojID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
