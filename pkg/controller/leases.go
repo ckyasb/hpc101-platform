@@ -200,7 +200,7 @@ func (h *Handler) handleRelease(w http.ResponseWriter, r *http.Request) {
 	}
 	rt := h.runtime
 	if err := l.ExecuteRelease(func(s lease.ReleaseState) error {
-		if s == lease.StateDraining && rt != nil {
+		if s == lease.StateStopped && rt != nil {
 			return rt.StopService(l.ContainerID)
 		}
 		return nil

@@ -25,11 +25,12 @@ func (m memStore) UpsertLease(l *Lease) error {
 }
 
 type fakeRuntime struct {
-	lastPrincipal string
-	lastImage     string
-	lastSSHKey    string
-	lastCourse    string
-	lastProblem   string
+	lastPrincipal      string
+	lastImage          string
+	lastSSHKey         string
+	lastCourse         string
+	lastProblem        string
+	stoppedContainerID string
 }
 
 func (f *fakeRuntime) CreateService(req CreateServiceRequest) (*ServiceResult, error) {
@@ -40,7 +41,10 @@ func (f *fakeRuntime) CreateService(req CreateServiceRequest) (*ServiceResult, e
 	f.lastProblem = req.Problem
 	return &ServiceResult{ContainerID: "ctr-" + req.Principal, Host: "10.0.0.5", Port: 2222}, nil
 }
-func (f *fakeRuntime) StopService(containerID string) error { return nil }
+func (f *fakeRuntime) StopService(containerID string) error {
+	f.stoppedContainerID = containerID
+	return nil
+}
 
 func TestHandleLeasesActive(t *testing.T) {
 	l := lease.NewLease("student-42", "abc", "svc-student-42", "10.0.0.5", 2222, 8*time.Hour, 30*time.Minute)
@@ -300,7 +304,8 @@ func TestSubmitHandlerMethodRejection(t *testing.T) {
 func TestReleaseSuccess(t *testing.T) {
 	l := lease.NewLease("student-42", "ctr-abc", "svc-student-42", "10.0.0.5", 2222, 8*time.Hour, 30*time.Minute)
 	store := memStore{"student-42": l}
-	h := NewHandler(store, &fakeRuntime{}, nil)
+	rt := &fakeRuntime{}
+	h := NewHandler(store, rt, nil)
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/release?principal=student-42", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -312,6 +317,9 @@ func TestReleaseSuccess(t *testing.T) {
 	}
 	if l.ReleasedBy != lease.TriggerManual {
 		t.Errorf("ReleasedBy: %s", l.ReleasedBy)
+	}
+	if rt.stoppedContainerID != "ctr-abc" {
+		t.Errorf("stop not called, or wrong ID: %q", rt.stoppedContainerID)
 	}
 }
 
