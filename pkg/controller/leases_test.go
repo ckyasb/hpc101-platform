@@ -342,7 +342,7 @@ func TestReleaseServiceDown(t *testing.T) {
 	if rec.Code != http.StatusInternalServerError {
 		t.Errorf("expected 500, got %d", rec.Code)
 	}
-	if l.State == lease.StateReclaimed {
-		t.Error("lease should not be Reclaimed after failed release")
+	if l.State != lease.StateActive {
+		t.Errorf("lease should remain Active after failed stop, got %s", l.State)
 	}
 }

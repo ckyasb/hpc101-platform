@@ -205,6 +205,9 @@ func (h *Handler) handleRelease(w http.ResponseWriter, r *http.Request) {
 		}
 		return nil
 	}); err != nil {
+		// Restore Active: container may still be running
+		l.State = lease.StateActive
+		h.store.UpsertLease(l)
 		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
 		return
 	}
