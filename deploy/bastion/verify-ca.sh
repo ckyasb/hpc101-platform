@@ -3,7 +3,7 @@
 #
 # Confirms that the controller's mounted ca_key (PKCS8 PEM, loaded by sshca.LoadCA)
 # produces a public key matching the bastion's TrustedUserCAKeys ca.pub, and that a
-# cert signed with ca_key verifies against ca.pub.
+# cert signed with ca_key verifies against ca.pub by fingerprint comparison.
 #
 # Usage: ./verify-ca.sh
 
@@ -16,6 +16,8 @@ trap 'rm -rf "$TMPDIR"' EXIT
 
 echo "=== Extracting CA material from both namespaces ==="
 kubectl -n "$CTRL_NS" get secret bastion-ca-keys -o jsonpath='{.data.ca_key}' | base64 -d > "$TMPDIR/ca_key"
+# Restrict permissions immediately so ssh-keygen accepts the private key.
+chmod 600 "$TMPDIR/ca_key"
 kubectl -n "$BASTION_NS" get secret bastion-ca-keys -o jsonpath='{.data.ca\.pub}' | base64 -d > "$TMPDIR/bastion_ca.pub"
 
 echo "=== Checking controller ca_key is readable PKCS8 ==="
@@ -40,19 +42,26 @@ fi
 
 echo "=== Signing a test cert with controller ca_key ==="
 ssh-keygen -t ed25519 -f "$TMPDIR/user_key" -N "" -q
+chmod 600 "$TMPDIR/user_key"
 ssh-keygen -s "$TMPDIR/ca_key" -I test-user -n testuser -V +5m "$TMPDIR/user_key.pub" >/dev/null 2>&1 || {
   echo "FAIL: could not sign cert with controller ca_key"
   exit 1
 }
 
 echo "=== Verifying cert signature against bastion-trusted CA ==="
-# Extract the signing CA fingerprint from the cert (format: "SHA256:...").
-CERT_SIGNER=$(ssh-keygen -L -f "$TMPDIR/user_key-cert.pub" | awk '/Signing CA/ {print $3}')
-# Extract the bastion CA fingerprint (ssh-keygen -lf prints "256 SHA256:... path (type)").
-BASTION_FP=$(ssh-keygen -lf "$TMPDIR/bastion_ca.pub" | awk '{print $2}')
+# Parse the cert's Signing CA line and extract the SHA256: fingerprint token.
+# OpenSSH output: "Signing CA: ED25519 SHA256:abcd..."
+# Use grep + sed to robustly extract the SHA256: token regardless of key type/field position.
+CERT_SIGNER=$(ssh-keygen -L -f "$TMPDIR/user_key-cert.pub" | grep 'Signing CA:' | grep -oE 'SHA256:[A-Za-z0-9+/=]+')
+# Parse the bastion CA fingerprint from ssh-keygen -lf (field 2 is SHA256:...).
+BASTION_FP=$(ssh-keygen -lf "$TMPDIR/bastion_ca.pub" | grep -oE 'SHA256:[A-Za-z0-9+/=]+')
 
-if [ -z "$CERT_SIGNER" ] || [ -z "$BASTION_FP" ]; then
-  echo "FAIL: could not extract fingerprints (cert_signer='$CERT_SIGNER' bastion_fp='$BASTION_FP')"
+if [ -z "$CERT_SIGNER" ]; then
+  echo "FAIL: could not extract cert signer fingerprint from certificate"
+  exit 1
+fi
+if [ -z "$BASTION_FP" ]; then
+  echo "FAIL: could not extract bastion CA fingerprint"
   exit 1
 fi
 
@@ -63,19 +72,4 @@ else
   exit 1
 fi
 
-echo "=== Confirming bastion CA accepts the cert ==="
-# Add the bastion CA to a known_hosts-style trust store and verify the cert.
-mkdir -p "$TMPDIR/known_hosts.d"
-cp "$TMPDIR/bastion_ca.pub" "$TMPDIR/known_hosts.d/ca.pub"
-# ssh-keygen -Q against a KRL is not what we want; instead use authorized_keys
-# verification: a cert signed by a trusted CA is accepted if the CA pubkey is
-# in the user's authorized_keys as a cert authority.
-echo "$(cat "$TMPDIR/bastion_ca.pub")" > "$TMPDIR/authorized_keys"
-if ssh-keygen -Q -f "$TMPDIR/authorized_keys" "$TMPDIR/user_key-cert.pub" >/dev/null 2>&1; then
-  echo "PASS: cert verified against bastion CA trust store"
-else
-  # ssh-keygen -Q on authorized_keys is not universally supported; the fingerprint
-  # match above is the authoritative check.
-  echo "PASS: cert signer fingerprint verified (authorized_keys -Q not supported, fingerprint match is authoritative)"
-fi
 echo "=== CA trust verification complete ==="
