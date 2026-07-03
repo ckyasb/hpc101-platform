@@ -199,7 +199,7 @@ func (c *Client) Submit(ctx context.Context, req SubmitRequest) (string, error) 
 	if err := json.Unmarshal(body, &env); err != nil {
 		return "", fmt.Errorf("adapter: parse submit response: %w (body: %s)", err, string(body))
 	}
-	if env.Code != 0 {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 || env.Code != 0 {
 		return "", newCSOJError(http.MethodPost, fmt.Sprintf("problems/%s/submit", req.ProblemID), resp.StatusCode, env)
 	}
 
@@ -237,7 +237,7 @@ func (c *Client) QueryResult(ctx context.Context, submissionID string) (*Submiss
 	if err := json.Unmarshal(body, &env); err != nil {
 		return nil, fmt.Errorf("adapter: parse query response: %w", err)
 	}
-	if env.Code != 0 {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 || env.Code != 0 {
 		return nil, newCSOJError(http.MethodGet, fmt.Sprintf("submissions/%s", submissionID), resp.StatusCode, env)
 	}
 
