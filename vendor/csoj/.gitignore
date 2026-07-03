@@ -1,0 +1,15 @@
+test
+
+configs
+storage
+contests
+
+CSOJ
+CSOJ.exe
+
+venv
+
+internal/embedui/sites
+
+
+*.log
