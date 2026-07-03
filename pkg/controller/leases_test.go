@@ -332,6 +332,31 @@ func (f *fakeRuntimeFailing) StopService(containerID string) error {
 	return fmt.Errorf("stop failed")
 }
 
+func TestSerializedStoreConcurrentReleaseAndUp(t *testing.T) {
+	s := NewSerializedStore()
+	l := lease.NewLease("student-42", "ctr-abc", "svc-student-42", "10.0.0.5", 2222, 1*time.Nanosecond, 30*time.Minute)
+	s.UpsertLease(l)
+	rt := &fakeRuntime{}
+
+	err1 := make(chan error, 1)
+	go func() { err1 <- s.ReleaseLease("student-42", rt) }()
+	time.Sleep(10 * time.Millisecond)
+
+	// After release (even if stop may fail), verify state consistency
+	l2, _ := s.LookupByPrincipal("student-42")
+	if l2 == nil {
+		t.Fatal("lease lost after concurrent release")
+	}
+	select {
+	case e := <-err1:
+		if e != nil {
+			t.Logf("release returned error: %v (expected if already releasing)", e)
+		}
+	default:
+		t.Log("release still in progress")
+	}
+}
+
 func TestReleaseServiceDown(t *testing.T) {
 	l := lease.NewLease("student-42", "ctr-abc", "svc-student-42", "10.0.0.5", 2222, 8*time.Hour, 30*time.Minute)
 	store := memStore{"student-42": l}

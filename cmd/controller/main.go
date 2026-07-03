@@ -8,8 +8,7 @@ import (
 	"hpc101-platform/controller"
 )
 
-// memStore is a minimal in-memory lease store for development.
-// Production replaces this with a persisted repository (task11).
+// memStore is replaced by controller.NewSerializedStore() for production.
 type memStore map[string]*controller.Lease
 
 func (m memStore) LookupByPrincipal(p string) (*controller.Lease, error) {
