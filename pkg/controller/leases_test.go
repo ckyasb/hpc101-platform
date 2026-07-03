@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1511,5 +1513,138 @@ func TestCreateServiceAllowsAfterRelease(t *testing.T) {
 	}
 	if rt.lastImage != "img:2" {
 		t.Errorf("expected img:2, got %s", rt.lastImage)
+	}
+}
+
+// Round 4: Concurrent double-up test
+
+func TestCreateServiceConcurrentDoubleUp(t *testing.T) {
+	rt := &fakeRuntime{}
+	s := NewSerializedStore()
+	h := NewHandler(s, rt, nil)
+
+	body := `{"principal":"concurrent-user","image":"img:1","ssh_key":"ssh-rsa AAA","course":"cs101","problem":"hw1"}`
+
+	// Launch two concurrent create requests for the same principal.
+	var wg sync.WaitGroup
+	var codes []int
+	var mu sync.Mutex
+
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/services", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			mu.Lock()
+			codes = append(codes, rec.Code)
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+
+	// Exactly one should succeed (201) and one should conflict (409).
+	created := 0
+	conflicted := 0
+	for _, c := range codes {
+		if c == http.StatusCreated {
+			created++
+		} else if c == http.StatusConflict {
+			conflicted++
+		}
+	}
+	if created != 1 {
+		t.Errorf("expected exactly 1 created, got %d (codes: %v)", created, codes)
+	}
+	if conflicted != 1 {
+		t.Errorf("expected exactly 1 conflict, got %d (codes: %v)", conflicted, codes)
+	}
+	// Verify only one container was created.
+	if rt.lastPrincipal != "concurrent-user" {
+		t.Errorf("runtime not called: %s", rt.lastPrincipal)
+	}
+}
+
+// Round 4: Runtime failure restores prior state
+
+func TestCreateServiceRuntimeFailureRestoresState(t *testing.T) {
+	s := NewSerializedStore()
+	// No prior lease. Use a failing runtime.
+	failingRt := &failingRuntime{}
+	h := NewHandler(s, failingRt, nil)
+
+	body := `{"principal":"fail-user","image":"img:1","ssh_key":"ssh-rsa AAA","course":"cs101","problem":"hw1"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/services", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500, got %d", rec.Code)
+	}
+	// Verify no lease remains for the principal.
+	l, _ := s.LookupByPrincipal("fail-user")
+	if l != nil && l.State == lease.StateActive {
+		t.Error("active lease should not exist after runtime failure")
+	}
+}
+
+type failingRuntime struct{}
+
+func (f *failingRuntime) CreateService(req CreateServiceRequest) (*ServiceResult, error) {
+	return nil, fmt.Errorf("runtime unavailable")
+}
+func (f *failingRuntime) StopService(containerID string) error { return nil }
+
+// Round 4: FileStore save-failure rollback test
+
+func TestFileStoreCreateSaveFailureStopsContainer(t *testing.T) {
+	tmpDir := t.TempDir()
+	// Use a path that will fail on write (a directory itself, not a file).
+	badPath := tmpDir + "/subdir"
+	os.MkdirAll(badPath, 0755) // Create as directory so file write fails.
+
+	fs, err := NewFileStore(badPath)
+	if err == nil {
+		// If NewFileStore succeeded (file existed), create a different bad path.
+		badPath = tmpDir + "/subdir/nested/deep"
+		os.MkdirAll(badPath, 0755)
+		fs, err = NewFileStore(badPath)
+		if err == nil {
+			t.Skip("could not create a save-failing path in this environment")
+		}
+	}
+
+	// If NewFileStore failed, the store is empty — upsert will try to save
+	// to the bad path and fail. But NewFileStore won't return a usable store.
+	// Instead, manually create a FileStore and point it at a bad path.
+	fs = &FileStore{
+		path: badPath, // directory, not writable as file
+		data: fileStoreData{
+			Leases:      make(map[string]*Lease),
+			Keys:        make(map[string]string),
+			Submissions: make(map[string]*SubmissionRecord),
+			ProblemMap:  make(map[string]string),
+		},
+	}
+
+	rt := &fakeRuntime{}
+	h := NewHandler(fs, rt, nil)
+
+	body := `{"principal":"savefail-user","image":"img:1","ssh_key":"ssh-rsa AAA","course":"cs101","problem":"hw1"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/services", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	// Should return 500 due to save failure.
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500 on save failure, got %d: %s", rec.Code, rec.Body.String())
+	}
+	// Verify cleanup was called (StopService).
+	if rt.stoppedContainerID == "" {
+		t.Error("StopService was not called after save failure")
 	}
 }

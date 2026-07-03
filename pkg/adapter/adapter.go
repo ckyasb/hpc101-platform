@@ -263,15 +263,7 @@ func (c *Client) Submit(ctx context.Context, req SubmitRequest) (string, error) 
 
 		env, err := validateEnvelope(http.MethodPost, fmt.Sprintf("problems/%s/submit", req.ProblemID), resp, body)
 		if err != nil {
-			// Map ban/disallowed/forbidden to PolicyError (non-retryable).
-			var csjErr *CSOJError
-			if errors.As(err, &csjErr) && csjErr.HTTPStatus >= 400 && csjErr.HTTPStatus < 500 {
-				msg := strings.ToLower(csjErr.Message)
-				if strings.Contains(msg, "ban") || strings.Contains(msg, "disallowed") || strings.Contains(msg, "forbidden") {
-					return &PolicyError{Code: csjErr.Code, Message: csjErr.Message}
-				}
-			}
-			return err // CSOJError — isRetryable will decide
+			return mapCSOJPolicyError(err)
 		}
 
 		var data struct {
@@ -314,7 +306,7 @@ func (c *Client) QueryResult(ctx context.Context, submissionID string) (*Submiss
 
 		env, err := validateEnvelope(http.MethodGet, fmt.Sprintf("submissions/%s", submissionID), resp, body)
 		if err != nil {
-			return err
+			return mapCSOJPolicyError(err)
 		}
 
 		var sub Submission
@@ -408,6 +400,24 @@ func (e *PolicyError) Error() string {
 	return fmt.Sprintf("adapter: policy rejection (code=%d): %s", e.Code, e.Message)
 }
 
+// mapCSOJPolicyError checks if a CSOJError is a policy rejection (ban,
+// disallowed file, forbidden) and returns a *PolicyError if so.
+// Returns the original error unchanged if it is not a policy rejection.
+func mapCSOJPolicyError(err error) error {
+	var csjErr *CSOJError
+	if !errors.As(err, &csjErr) {
+		return err
+	}
+	if csjErr.HTTPStatus < 400 || csjErr.HTTPStatus >= 500 {
+		return err // Not a 4xx client error
+	}
+	msg := strings.ToLower(csjErr.Message)
+	if strings.Contains(msg, "ban") || strings.Contains(msg, "disallowed") || strings.Contains(msg, "forbidden") {
+		return &PolicyError{Code: csjErr.Code, Message: csjErr.Message}
+	}
+	return err
+}
+
 // doCSOJ sends a JSON request with bounded retry, reads the body, and validates
 // the CSOJ envelope. Transient failures (5xx, transport) are retried.
 // Policy failures (4xx with ban/disallowed indicators) are mapped to PolicyError.
@@ -431,16 +441,7 @@ func (c *Client) doCSOJ(ctx context.Context, method, path string, body []byte) (
 		}
 		env, err := validateEnvelope(method, path, resp, respBody)
 		if err != nil {
-			// Check if this is a policy error (ban, disallowed file).
-			var csjErr *CSOJError
-			if errors.As(err, &csjErr) && csjErr.HTTPStatus >= 400 && csjErr.HTTPStatus < 500 {
-				// Map known ban/disallowed messages to PolicyError.
-				msg := strings.ToLower(csjErr.Message)
-				if strings.Contains(msg, "ban") || strings.Contains(msg, "disallowed") || strings.Contains(msg, "forbidden") {
-					return &PolicyError{Code: csjErr.Code, Message: csjErr.Message} // non-retryable
-				}
-			}
-			return err // CSOJError — isRetryable will decide
+			return mapCSOJPolicyError(err)
 		}
 		result = env
 		return nil

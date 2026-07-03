@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -392,5 +393,99 @@ func TestAdapterQueryRetryOn5xx(t *testing.T) {
 	}
 	if sub.Status != "Success" {
 		t.Errorf("status: %s", sub.Status)
+	}
+}
+
+// Round 4: PolicyError assertion tests
+
+func TestSubmitPolicyErrorOnBan(t *testing.T) {
+	var callCount int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(map[string]interface{}{"code": -1, "message": "user is banned for 24h"})
+	}))
+	defer srv.Close()
+	c := NewClient(srv.URL, "tok")
+	_, err := c.Submit(context.Background(), SubmitRequest{ProblemID: "p1", Files: map[string][]byte{"main.c": []byte("x")}})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var pe *PolicyError
+	if !errors.As(err, &pe) {
+		t.Fatalf("expected *PolicyError, got %T: %v", err, err)
+	}
+	if callCount != 1 {
+		t.Errorf("expected 1 call (no retry), got %d", callCount)
+	}
+}
+
+func TestQueryResultPolicyErrorOnDisallowed(t *testing.T) {
+	var callCount int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(map[string]interface{}{"code": -1, "message": "disallowed file type"})
+	}))
+	defer srv.Close()
+	c := NewClient(srv.URL, "tok")
+	_, err := c.QueryResult(context.Background(), "sub-1")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var pe *PolicyError
+	if !errors.As(err, &pe) {
+		t.Fatalf("expected *PolicyError, got %T: %v", err, err)
+	}
+	if callCount != 1 {
+		t.Errorf("expected 1 call (no retry), got %d", callCount)
+	}
+}
+
+func TestParseErrorNoRetry(t *testing.T) {
+	var callCount int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		// Return HTTP 200 but malformed JSON body.
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("not-json-at-all"))
+	}))
+	defer srv.Close()
+	c := NewClient(srv.URL, "tok")
+	_, err := c.Submit(context.Background(), SubmitRequest{ProblemID: "p1", Files: map[string][]byte{"main.c": []byte("x")}})
+	if err == nil {
+		t.Fatal("expected error for malformed response")
+	}
+	// Parse errors should NOT be retried.
+	if callCount != 1 {
+		t.Errorf("expected 1 call (no retry on parse error), got %d", callCount)
+	}
+}
+
+func TestSyncProblem5xxRetrySuccess(t *testing.T) {
+	var callCount int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		// First few GETs return 502, then 404, then 200.
+		if callCount <= 2 && r.Method == http.MethodGet {
+			w.WriteHeader(http.StatusBadGateway)
+			json.NewEncoder(w).Encode(map[string]interface{}{"code": -1, "message": "upstream"})
+			return
+		}
+		if r.Method == http.MethodGet {
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode(map[string]interface{}{"code": -1})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"code": 0})
+	}))
+	defer srv.Close()
+	c := NewClient(srv.URL, "tok")
+	_, err := c.SyncProblem(context.Background(), ContestRecord{ContestID: "c1", ProblemID: "p1", Title: "T"})
+	if err != nil {
+		t.Fatalf("SyncProblem with retry: %v", err)
+	}
+	if callCount < 3 {
+		t.Errorf("expected at least 3 calls (retry), got %d", callCount)
 	}
 }
