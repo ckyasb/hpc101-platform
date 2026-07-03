@@ -45,9 +45,11 @@ type CreateContainerRequest struct {
 	// MaxLife time.Duration  // TODO: connect to lease store
 }
 
-// CreateResult contains the created container's metadata.
+// CreateResult contains the created container's metadata and endpoint.
 type CreateResult struct {
 	ContainerID string
+	Host        string
+	Port        uint16
 }
 
 // Required platform labels for all svc- containers.

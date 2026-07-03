@@ -2,7 +2,7 @@
 # Builds the controller binary (cmd/controller/main.go).
 FROM golang:1.24-alpine AS builder
 WORKDIR /src
-COPY go.work ./
+COPY deploy/controller/go.controller.work ./go.work
 COPY pkg/lease/ ./pkg/lease/
 COPY pkg/controller/ ./pkg/controller/
 COPY cmd/controller/ ./cmd/controller/

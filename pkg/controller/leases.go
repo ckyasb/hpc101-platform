@@ -5,9 +5,11 @@ package controller
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 
 	"hpc101-platform/lease"
 )
@@ -22,11 +24,27 @@ type LeaseStore interface {
 	UpsertLease(l *Lease) error
 }
 
+// CreateServiceRequest carries the parameters to create a student service.
+type CreateServiceRequest struct {
+	Principal string
+	Image     string
+	SSHKey    string
+	Course    string
+	Problem   string
+	CPULimit  int64
+	MemoryMB  int64
+}
+
+// ServiceResult is returned when a service container is created and started.
+type ServiceResult struct {
+	ContainerID string
+	Host        string
+	Port        uint16
+}
+
 // ContainerCreator is the interface for creating service containers.
-// Implemented by the Podman runtime client (pkg/runtime).
 type ContainerCreator interface {
-	CreateContainer(owner, image, sshKey string, labels map[string]string) (containerID, host string, port uint16, err error)
-	StopAndRemoveContainer(ctx interface{}, containerID string) error
+	CreateService(principal, image, sshKey, course, problem string) (*ServiceResult, error)
 }
 
 // Handler serves the controller HTTP API.
@@ -40,6 +58,7 @@ type Handler struct {
 func NewHandler(store LeaseStore, runtime ContainerCreator) *Handler {
 	h := &Handler{store: store, runtime: runtime, mux: http.NewServeMux()}
 	h.mux.HandleFunc("/api/v1/leases", h.handleLeases)
+	h.mux.HandleFunc("/api/v1/services", h.handleCreateService)
 	h.mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
@@ -96,5 +115,53 @@ func (h *Handler) handleLeases(w http.ResponseWriter, r *http.Request) {
 		"state":          string(l.State),
 	}
 	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
+// handleCreateService handles POST /api/v1/services — create a student service container.
+func (h *Handler) handleCreateService(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	if h.runtime == nil {
+		http.Error(w, `{"error":"runtime not configured"}`, http.StatusServiceUnavailable)
+		return
+	}
+	var req CreateServiceRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
+		return
+	}
+	if !principalPattern.MatchString(req.Principal) {
+		http.Error(w, `{"error":"invalid principal"}`, http.StatusBadRequest)
+		return
+	}
+	if req.Image == "" {
+		http.Error(w, `{"error":"image required"}`, http.StatusBadRequest)
+		return
+	}
+
+	result, err := h.runtime.CreateService(req.Principal, req.Image, req.SSHKey, req.Course, req.Problem)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
+
+	l := lease.NewLease(req.Principal, result.ContainerID,
+		"svc-"+req.Principal, result.Host, result.Port, 8*time.Hour, 30*time.Minute)
+	if err := h.store.UpsertLease(l); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
+
+	resp := map[string]interface{}{
+		"container_id": result.ContainerID,
+		"host":         result.Host,
+		"port":         result.Port,
+		"state":        string(l.State),
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(resp)
 }
