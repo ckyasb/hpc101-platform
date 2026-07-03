@@ -75,7 +75,7 @@ spec:
             readOnlyRootFilesystem: true
           env:
             - name: HPC101_RUNTIME_ENDPOINT
-              value: "tcp://podman-runtime.hpc101-runtime.svc.cluster.local:2375"
+              value: "tcp://dedicated-judge-runtime.hpc101-runtime.svc.cluster.local:2375"
             - name: HPC101_BASTION_MGMT_URL
               value: "http://bastion.hpc101-bastion.svc.cluster.local:8081"
             - name: HPC101_STORE_PATH

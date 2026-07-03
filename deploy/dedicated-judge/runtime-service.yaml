@@ -1,0 +1,42 @@
+# DEC-1 Dedicated Judge Runtime — Service + EndpointSlice
+#
+# Selectorless Service with a manually-managed EndpointSlice so the
+# dedicated out-of-cluster Podman judge node is reachable from
+# controller and CSOJ via a stable DNS name.
+#
+# Operators must set the EndpointSlice address to the dedicated node's IP
+# before deploying CSOJ/controller. See README.md for details.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dedicated-judge-runtime
+  namespace: hpc101-runtime
+  labels:
+    app.kubernetes.io/part-of: hpc101-platform
+spec:
+  type: ClusterIP
+  ports:
+    - name: docker
+      port: 2375
+      targetPort: 2375
+      protocol: TCP
+---
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
+metadata:
+  name: dedicated-judge-runtime
+  namespace: hpc101-runtime
+  labels:
+    app.kubernetes.io/part-of: hpc101-platform
+    kubernetes.io/service-name: dedicated-judge-runtime
+addressType: IP
+ports:
+  - name: docker
+    port: 2375
+    protocol: TCP
+endpoints:
+  - addresses:
+      - "10.0.0.100"  # REPLACE with actual dedicated judge node IP
+    conditions:
+      ready: true

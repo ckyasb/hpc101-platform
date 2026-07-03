@@ -51,12 +51,13 @@ echo "[1/10] Version reachability..."
 VERSION=$(curl -sf "${API}/version" 2>/dev/null) || { echo "FAIL: /version not reachable"; exit 1; }
 echo "PASS: API reachable"
 
-# 2. Container create with NanoCPUs + Memory
+# 2. Container create with NanoCPUs + Memory + CpusetCpus
 echo ""
 echo "[2/10] Container create with resource limits..."
+CPUSET="${HPC101_VERIFY_CPUSET:-0}"
 CREATE_RESP=$(curl -sf -X POST "${API}/containers/create" \
   -H 'Content-Type: application/json' \
-  -d "{\"Image\":\"${IMAGE}\",\"Cmd\":[\"sleep\",\"120\"],\"HostConfig\":{\"NanoCPUs\":500000000,\"Memory\":134217728}}") || { echo "FAIL: container create"; exit 1; }
+  -d "{\"Image\":\"${IMAGE}\",\"Cmd\":[\"sleep\",\"120\"],\"HostConfig\":{\"NanoCPUs\":500000000,\"Memory\":134217728,\"CpusetCpus\":\"${CPUSET}\"}}") || { echo "FAIL: container create"; exit 1; }
 CTR_ID=$(echo "$CREATE_RESP" | grep -o '"Id":"[^"]*"' | cut -d'"' -f4)
 if [ -z "$CTR_ID" ]; then echo "FAIL: no container ID in create response"; exit 1; fi
 echo "PASS: container created ($(short_id "$CTR_ID"))"
@@ -81,15 +82,15 @@ EXEC_RAW=$(curl -sf -X POST "${API}/exec/${EXEC_ID}/start" \
   -d '{}' 2>/dev/null) || { echo "FAIL: exec start"; exit 1; }
 # Docker stdcopy framing: first byte is stream type (1=stdout, 2=stderr, 3=stdin).
 # When Tty=false, Docker SDK uses stdcopy.StdCopy to demux. Validate the first
-# byte is a valid stream type (0x01 or 0x02). If the response is unframed (raw
-# text), the first byte would be 'e' (0x65) from "exec-works".
+# byte is a valid stream type (0x01 or 0x02). Unframed output is a FAIL because
+# CSOJ's stdcopy.StdCopy would misparse it.
 FIRST_BYTE=$(printf '%s' "$EXEC_RAW" | head -c1 | od -An -tu1 | tr -d ' ')
 if [ "$FIRST_BYTE" = "1" ] || [ "$FIRST_BYTE" = "2" ]; then
   echo "PASS: stdcopy framing valid (stream type=$FIRST_BYTE)"
-elif echo "$EXEC_RAW" | grep -q "exec-works"; then
-  echo "PASS: exec output contains 'exec-works' (unframed but content correct)"
 else
-  echo "FAIL: exec output missing 'exec-works' and no valid stdcopy framing"
+  echo "FAIL: exec response is not stdcopy-framed (first byte=$FIRST_BYTE, expected 1 or 2)"
+  echo "  This means the runtime returns raw output instead of Docker multiplexed streams."
+  echo "  CSOJ's stdcopy.StdCopy will fail to parse this."
   exit 1
 fi
 
@@ -143,12 +144,24 @@ else
   echo "  cgroup output: $RES_CLEAN"
   exit 1
 fi
-# CPU quota must show a non-max value (quota assigned). Fail if absent.
-if echo "$RES_CLEAN" | grep -qE "^500000 100000|max 100000"; then
-  echo "PASS: CPU quota enforced"
+# CPU quota must show a non-max value (quota assigned). Fail if absent or unlimited.
+CPU_MAX_LINE=$(echo "$RES_CLEAN" | head -1)
+if echo "$CPU_MAX_LINE" | grep -q "^max"; then
+  echo "FAIL: CPU quota is unlimited (cpu.max=$CPU_MAX_LINE)"
+  exit 1
+elif echo "$CPU_MAX_LINE" | grep -q "500000"; then
+  echo "PASS: CPU quota enforced (500000/100000 = 0.5 CPU)"
 else
-  echo "WARN: CPU quota not clearly visible (may differ by cgroup version)"
-  echo "  cpu.max output: $(echo "$RES_CLEAN" | head -1)"
+  echo "FAIL: CPU quota 500000 not found in cpu.max (got: $CPU_MAX_LINE)"
+  exit 1
+fi
+# Cpuset must include the configured CPU.
+CPUSET_LINE=$(echo "$RES_CLEAN" | grep -A1 "memory.max" | tail -1 | tr -d '[:space:]')
+if echo "$CPUSET_LINE" | grep -q "${CPUSET}" 2>/dev/null; then
+  echo "PASS: cpuset includes configured CPU (${CPUSET})"
+else
+  echo "FAIL: cpuset does not include configured CPU ${CPUSET} (got: $CPUSET_LINE)"
+  exit 1
 fi
 
 # 8. In-container hardening (/proc/self/status)
@@ -208,6 +221,27 @@ else
 fi
 curl -sf -X DELETE "${API}/containers/${WAIT_CTR}?force=true" >/dev/null 2>&1 || { echo "FAIL: wait test remove"; exit 1; }
 echo "PASS: wait test cleanup"
+
+# 10b. Client-side timeout test (CSOJ's context.WithTimeout pattern)
+echo ""
+echo "[10b] Client-side timeout behavior..."
+TO_CTR=$(curl -sf -X POST "${API}/containers/create" \
+  -H 'Content-Type: application/json' \
+  -d "{\"Image\":\"${IMAGE}\",\"Cmd\":[\"sleep\",\"30\"]}" | grep -o '"Id":"[^"]*"' | cut -d'"' -f4) || { echo "FAIL: timeout test create"; exit 1; }
+curl -sf -X POST "${API}/containers/${TO_CTR}/start" >/dev/null 2>&1 || { echo "FAIL: timeout test start"; exit 1; }
+# curl --max-time forces a client-side timeout, simulating context.WithTimeout.
+# The /wait should not return before the timeout; curl exits 28 on timeout.
+curl -sf --max-time 1 -X POST "${API}/containers/${TO_CTR}/wait" >/dev/null 2>&1
+CURL_EXIT=$?
+if [ "$CURL_EXIT" = "28" ]; then
+  echo "PASS: client-side timeout fires (curl exit 28)"
+else
+  echo "FAIL: expected curl timeout (exit 28), got exit $CURL_EXIT"
+fi
+# Cleanup: stop and remove the still-running container.
+curl -sf -X POST "${API}/containers/${TO_CTR}/stop" >/dev/null 2>&1 || true
+curl -sf -X DELETE "${API}/containers/${TO_CTR}?force=true" >/dev/null 2>&1 || { echo "FAIL: timeout test remove"; exit 1; }
+echo "PASS: timeout test cleanup"
 
 echo ""
 echo "=== All Docker API verification checks passed ==="

@@ -69,7 +69,7 @@ data:
             cpu: 4
             memory: 8192
             docker:
-              host: "tcp://podman-runtime.hpc101-runtime.svc.cluster.local:2375"
+              host: "tcp://dedicated-judge-runtime.hpc101-runtime.svc.cluster.local:2375"
               tls_verify: false
               ca_cert: ""
               cert: ""
