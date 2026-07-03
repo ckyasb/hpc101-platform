@@ -111,6 +111,48 @@ func (s *serializedStore) ReleaseLeaseIf(principal string, trigger lease.Trigger
 	return nil
 }
 
+// CreateLeaseForPrincipal is the store-owned atomic create path.
+// It holds the store lock for the full create lifecycle:
+//  1. Check existing lease — reject if Active/Closing/Draining/Stopped
+//  2. Reserve the principal with a placeholder Closing lease
+//  3. Call the runtime to create the container (lock still held)
+//  4. If runtime succeeds, replace placeholder with the real Active lease
+//  5. If runtime fails, remove the placeholder and return the error
+//
+// This prevents the TOCTOU race where a concurrent up could pass the
+// existing-lease check between Lookup and Upsert.
+func (s *serializedStore) CreateLeaseForPrincipal(principal string, create func() (*ServiceResult, error), buildLease func(*ServiceResult) *Lease) (*Lease, *ServiceResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Step 1: reject if principal already has a non-terminal lease.
+	existing, ok := s.leases[principal]
+	if ok && existing != nil && existing.State != lease.StateReclaimed {
+		return nil, nil, fmt.Errorf("principal %s already has a %s lease", principal, existing.State)
+	}
+
+	// Step 2: reserve the principal with a placeholder to block concurrent up.
+	placeholder := &Lease{
+		Owner: principal,
+		State: lease.StateClosing,
+	}
+	s.leases[principal] = placeholder
+
+	// Step 3: call the runtime to create the container (lock held).
+	result, err := create()
+	if err != nil {
+		// Step 5a: runtime failed — remove placeholder.
+		delete(s.leases, principal)
+		return nil, nil, err
+	}
+
+	// Step 4: replace placeholder with the real Active lease.
+	l := buildLease(result)
+	cpy := *l
+	s.leases[principal] = &cpy
+	return l, result, nil
+}
+
 // SaveSubmission persists a submission record in the store.
 func (s *serializedStore) SaveSubmission(rec *SubmissionRecord) error {
 	s.mu.Lock()

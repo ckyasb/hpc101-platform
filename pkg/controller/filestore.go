@@ -282,3 +282,34 @@ func (fs *FileStore) ReleaseLeaseIf(principal string, trigger lease.Trigger, sho
 	fs.data.Leases[principal] = l
 	return fs.unsafeSaveLocked()
 }
+
+// CreateLeaseForPrincipal is the store-owned atomic create path for FileStore.
+// Same semantics as serializedStore.CreateLeaseForPrincipal but persists to disk.
+func (fs *FileStore) CreateLeaseForPrincipal(principal string, create func() (*ServiceResult, error), buildLease func(*ServiceResult) *Lease) (*Lease, *ServiceResult, error) {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+
+	// Reject if principal already has a non-terminal lease.
+	existing, ok := fs.data.Leases[principal]
+	if ok && existing != nil && existing.State != lease.StateReclaimed {
+		return nil, nil, fmt.Errorf("principal %s already has a %s lease", principal, existing.State)
+	}
+
+	// Reserve with placeholder.
+	placeholder := &Lease{Owner: principal, State: lease.StateClosing}
+	fs.data.Leases[principal] = placeholder
+
+	// Call runtime to create container (lock held).
+	result, err := create()
+	if err != nil {
+		delete(fs.data.Leases, principal)
+		return nil, nil, err
+	}
+
+	// Replace placeholder with real Active lease.
+	l := buildLease(result)
+	cpy := *l
+	fs.data.Leases[principal] = &cpy
+	_ = fs.unsafeSaveLocked()
+	return l, result, nil
+}

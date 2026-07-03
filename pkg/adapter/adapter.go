@@ -389,24 +389,58 @@ func (c *Client) SyncProblem(ctx context.Context, rec ContestRecord) (string, er
 	return rec.ProblemID, c.upsertProblem(ctx, rec)
 }
 
-// doCSOJ sends a JSON request, reads the body, and validates the CSOJ envelope.
+// PolicyError represents a non-retryable CSOJ policy rejection (ban,
+// disallowed file, contest window violation). These must not be retried.
+type PolicyError struct {
+	Code    int
+	Message string
+}
+
+func (e *PolicyError) Error() string {
+	return fmt.Sprintf("adapter: policy rejection (code=%d): %s", e.Code, e.Message)
+}
+
+// doCSOJ sends a JSON request with bounded retry, reads the body, and validates
+// the CSOJ envelope. Transient failures (5xx, transport) are retried.
+// Policy failures (4xx with ban/disallowed indicators) are mapped to PolicyError.
 func (c *Client) doCSOJ(ctx context.Context, method, path string, body []byte) (*csjResponse, error) {
-	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+"/"+path, bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("adapter: new request: %w", err)
+	var result *csjResponse
+	doErr := retryWithBackoff(ctx, func() error {
+		req, err := http.NewRequestWithContext(ctx, method, c.baseURL+"/"+path, bytes.NewReader(body))
+		if err != nil {
+			return fmt.Errorf("adapter: new request: %w", err) // non-retryable
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+c.credential)
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return &CSOJError{Method: method, Path: path, HTTPStatus: 0, Message: err.Error()} // retryable
+		}
+		defer resp.Body.Close()
+		respBody, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return &CSOJError{Method: method, Path: path, HTTPStatus: resp.StatusCode, Message: err.Error()} // retryable
+		}
+		env, err := validateEnvelope(method, path, resp, respBody)
+		if err != nil {
+			// Check if this is a policy error (ban, disallowed file).
+			var csjErr *CSOJError
+			if errors.As(err, &csjErr) && csjErr.HTTPStatus >= 400 && csjErr.HTTPStatus < 500 {
+				// Map known ban/disallowed messages to PolicyError.
+				msg := strings.ToLower(csjErr.Message)
+				if strings.Contains(msg, "ban") || strings.Contains(msg, "disallowed") || strings.Contains(msg, "forbidden") {
+					return &PolicyError{Code: csjErr.Code, Message: csjErr.Message} // non-retryable
+				}
+			}
+			return err // CSOJError — isRetryable will decide
+		}
+		result = env
+		return nil
+	})
+	if doErr != nil {
+		return nil, doErr
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.credential)
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("adapter: %s %s: %w", method, path, err)
-	}
-	defer resp.Body.Close()
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("adapter: read %s %s: %w", method, path, err)
-	}
-	return validateEnvelope(method, path, resp, respBody)
+	return result, nil
 }
 
 // getResource returns (true, nil) if the resource exists, (false, nil) for HTTP 404
