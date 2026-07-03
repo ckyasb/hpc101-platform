@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"log"
 	"time"
 
 	"hpc101-platform/lease"
@@ -31,14 +32,14 @@ func runMaxLifeTrigger(ctx context.Context, store ReleaseOps, rt ContainerCreato
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			// Iterate copies; ReleaseLeaseIf rechecks under lock
 			for _, l := range store.AllLeases() {
 				if l.State != lease.StateActive || !l.IsExpired() {
 					continue
 				}
-				store.ReleaseLeaseIf(l.Owner, lease.TriggerMaxLife,
-					func(l *Lease) bool { return l.IsExpired() },
-					rt, drainer)
+				err := store.ReleaseLeaseIf(l.Owner, lease.TriggerMaxLife, func(l *Lease) bool { return l.IsExpired() }, rt, drainer)
+				if err != nil {
+					log.Printf("max-life release failed for %s: %v", l.Owner, err)
+				}
 			}
 		}
 	}
@@ -56,9 +57,10 @@ func runIdleTrigger(ctx context.Context, store ReleaseOps, rt ContainerCreator, 
 				if l.State != lease.StateActive || !l.IsIdle() {
 					continue
 				}
-				store.ReleaseLeaseIf(l.Owner, lease.TriggerIdle,
-					func(l *Lease) bool { return l.IsIdle() },
-					rt, drainer)
+				err := store.ReleaseLeaseIf(l.Owner, lease.TriggerIdle, func(l *Lease) bool { return l.IsIdle() }, rt, drainer)
+				if err != nil {
+					log.Printf("idle release failed for %s: %v", l.Owner, err)
+				}
 			}
 		}
 	}

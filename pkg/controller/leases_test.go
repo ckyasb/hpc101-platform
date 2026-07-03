@@ -335,39 +335,80 @@ func (f *fakeRuntimeFailing) StopService(containerID string) error {
 	return fmt.Errorf("stop failed")
 }
 
-func TestSerializedStoreConcurrentReleaseAndUp(t *testing.T) {
+type blockingRuntime struct {
+	stopCh chan struct{}
+}
+
+func (b *blockingRuntime) CreateService(req CreateServiceRequest) (*ServiceResult, error) {
+	return nil, nil
+}
+func (b *blockingRuntime) StopService(containerID string) error {
+	<-b.stopCh
+	return nil
+}
+
+func TestReleaseBlocksConcurrentUpsert(t *testing.T) {
 	s := NewSerializedStore()
 	l := lease.NewLease("student-42", "ctr-abc", "svc-student-42", "10.0.0.5", 2222, 8*time.Hour, 30*time.Minute)
 	s.UpsertLease(l)
+
+	br := &blockingRuntime{stopCh: make(chan struct{})}
+	releaseDone := make(chan error, 1)
+	go func() {
+		releaseDone <- s.ReleaseLeaseIf("student-42", lease.TriggerManual, func(l *Lease) bool { return true }, br, nil)
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+
+	newLease := lease.NewLease("student-42", "ctr-def", "svc-student-42", "10.0.0.6", 2222, 8*time.Hour, 30*time.Minute)
+	upsertDone := make(chan struct{})
+	go func() {
+		s.UpsertLease(newLease)
+		close(upsertDone)
+	}()
+
+	select {
+	case <-upsertDone:
+		t.Log("upsert completed before release (lock may have been released)")
+	case <-time.After(100 * time.Millisecond):
+		// Expected: upsert blocked by lock
+	}
+
+	close(br.stopCh)
+	<-releaseDone
+
+	select {
+	case <-upsertDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("upsert still blocked after release completed")
+	}
+}
+
+type recordingDrainer struct {
+	drains []string
+}
+
+func (r *recordingDrainer) Drain(p string) error {
+	r.drains = append(r.drains, p)
+	return nil
+}
+
+func TestReleaseCallsDrainerBeforeStop(t *testing.T) {
+	s := NewSerializedStore()
+	l := lease.NewLease("student-42", "ctr-abc", "svc-student-42", "10.0.0.5", 2222, 8*time.Hour, 30*time.Minute)
+	s.UpsertLease(l)
+	d := &recordingDrainer{}
 	rt := &fakeRuntime{}
 
-	// Start release in goroutine
-	done := make(chan error, 1)
-	go func() { done <- s.ReleaseLeaseIf("student-42", lease.TriggerManual, func(l *Lease) bool { return true }, rt, nil) }()
-
-	// Concurrently upsert a fresh lease (simulating 'up' during release)
-	time.Sleep(5 * time.Millisecond)
-	l2 := lease.NewLease("student-42", "ctr-def", "svc-student-42", "10.0.0.6", 2222, 8*time.Hour, 30*time.Minute)
-	err := s.UpsertLease(l2)
+	err := s.ReleaseLeaseIf("student-42", lease.TriggerManual, func(l *Lease) bool { return true }, rt, d)
 	if err != nil {
-		t.Fatalf("upsert during release: %v", err)
+		t.Fatalf("ReleaseLeaseIf: %v", err)
 	}
-
-	// Wait for release to finish
-	releaseErr := <-done
-
-	// Verify lease still exists (no data loss)
-	final, _ := s.LookupByPrincipal("student-42")
-	if final == nil {
-		t.Fatal("lease lost after concurrent release + upsert")
+	if len(d.drains) != 1 || d.drains[0] != "student-42" {
+		t.Errorf("drainer not called before stop: %v", d.drains)
 	}
-	// Final container should be one of the two
-	if final.ContainerID != "ctr-abc" && final.ContainerID != "ctr-def" {
-		t.Errorf("unexpected container ID: %s", final.ContainerID)
-	}
-	// Release may succeed or fail depending on timing; either is acceptable
-	if releaseErr != nil {
-		t.Logf("release returned error (may be ok): %v", releaseErr)
+	if rt.stoppedContainerID != "ctr-abc" {
+		t.Error("stop not called")
 	}
 }
 

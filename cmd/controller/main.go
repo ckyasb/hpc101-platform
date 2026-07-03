@@ -21,7 +21,8 @@ func main() {
 	}
 	sub := newSubmissionService()
 	store := controller.NewSerializedStore()
-	h := controller.NewHandler(store, rt, sub)
+	drainer := &controller.NoopBastionDrainer{}
+	h := controller.NewHandlerWithDrainer(store, rt, sub, drainer)
 
 	interval := 30 * time.Second
 	if v := os.Getenv("HPC101_RELEASE_TRIGGER_INTERVAL"); v != "" {
@@ -29,7 +30,7 @@ func main() {
 			interval = d
 		}
 	}
-	controller.StartReleaseTriggers(context.Background(), store, rt, nil, interval)
+	controller.StartReleaseTriggers(context.Background(), store, rt, drainer, interval)
 
 	log.Println("controller listening on :8080")
 	if err := http.ListenAndServe(":8080", h); err != nil {
