@@ -8,7 +8,7 @@ integration seam the hpc101-platform podman runtime must satisfy.
 
 | Method | Docker API | Used In | Verification Strategy |
 |--------|-----------|---------|-----------------------|
-| `NewDockerManager(cfg DockerConfig)` | `client.WithHost(cfg.Host)` | `dispatcher.go:Dispatch` | Build-time verified: CSOJ binary builds. Config parse verified: CSOJ loads our `config.yaml` with `host: tcp://podman-runtime...:2375`. |
+| `NewDockerManager(cfg DockerConfig)` | `client.WithHost(cfg.Host)` | `dispatcher.go:Dispatch` | Build-time verified: CSOJ binary builds. Config parse verified: CSOJ loads our `config.yaml` with `host: tcp://dedicated-judge-runtime...:2375`. |
 | `CreateVolume(ctx, name)` | `POST /volumes/create` | `dispatcher.go:Dispatch` (per submission) | Create a named volume, then remove after judging. Verify: `podman volume create; podman volume rm` |
 | `CreateContainer(ctx, image, volName, cpu, cpusetcpus, mem, asRoot, mounts, net, name, envs)` | `POST /containers/create` | `dispatcher.go:runWorkflowStep` | Create with resource limits (NanoCPUs/CpusetCpus/Memory), User mapping (1000:1000 when !asRoot), volume mount at `/mnt/work`, custom mounts (bind/tmpfs/volume, ReadOnly), NetworkDisabled toggle, env injection. Verify: `podman create --cpus=... --memory=... -v vol:/mnt/work ...` |
 | `ExecInContainer(ctx, cid, cmd, callback)` | `POST /containers/{id}/exec` | `dispatcher.go:runWorkflowStep` | Execute in running container, stream stdout/stderr via `stdcopy.StdCopy`. Verify: `podman exec <cid> <cmd>` |
@@ -46,5 +46,5 @@ Known compat gaps to test in the runtime POC (blocked on podman deploy):
     transitive dependency on opentelemetry (otel/trace@v1.44.0). CSOJ itself
     (vendor/csoj) builds with go 1.24. The POC is a validation tool, not a build
     dependency of the platform.
-- **Runtime POC** (cluster): PENDING (requires deployed podman-runtime Service;
+- **Runtime POC** (cluster): PENDING (requires deployed dedicated-judge-runtime Service;
   escalate to cluster test when available).

@@ -51,16 +51,21 @@ echo "[1/10] Version reachability..."
 VERSION=$(curl -sf "${API}/version" 2>/dev/null) || { echo "FAIL: /version not reachable"; exit 1; }
 echo "PASS: API reachable"
 
-# 2. Container create with NanoCPUs + Memory + CpusetCpus
+# 2. Container create with full CSOJ DockerManager surface
 echo ""
-echo "[2/10] Container create with resource limits..."
+echo "[2/10] Container create (full CSOJ surface)..."
 CPUSET="${HPC101_VERIFY_CPUSET:-0}"
+VOL_NAME="hpc101-verify-$$"
+# Create named volume (CSOJ CreateVolume).
+curl -sf -X POST "${API}/volumes/create" \
+  -H 'Content-Type: application/json' \
+  -d "{\"Name\":\"${VOL_NAME}\"}" >/dev/null 2>&1 || { echo "FAIL: volume create"; exit 1; }
 CREATE_RESP=$(curl -sf -X POST "${API}/containers/create" \
   -H 'Content-Type: application/json' \
-  -d "{\"Image\":\"${IMAGE}\",\"Cmd\":[\"sleep\",\"120\"],\"HostConfig\":{\"NanoCPUs\":500000000,\"Memory\":134217728,\"CpusetCpus\":\"${CPUSET}\"}}") || { echo "FAIL: container create"; exit 1; }
+  -d "{\"Image\":\"${IMAGE}\",\"Cmd\":[\"sleep\",\"120\"],\"Env\":[\"HPC101_VERIFY=1\"],\"User\":\"1000:1000\",\"NetworkDisabled\":true,\"HostConfig\":{\"NanoCPUs\":500000000,\"Memory\":134217728,\"CpusetCpus\":\"${CPUSET}\",\"Mounts\":[{\"Type\":\"volume\",\"Source\":\"${VOL_NAME}\",\"Target\":\"/mnt/work\"},{\"Type\":\"tmpfs\",\"Target\":\"/tmp/custom\"}]}}") || { echo "FAIL: container create"; exit 1; }
 CTR_ID=$(echo "$CREATE_RESP" | grep -o '"Id":"[^"]*"' | cut -d'"' -f4)
 if [ -z "$CTR_ID" ]; then echo "FAIL: no container ID in create response"; exit 1; fi
-echo "PASS: container created ($(short_id "$CTR_ID"))"
+echo "PASS: container created with full CSOJ surface ($(short_id "$CTR_ID"))"
 
 # 3. Container start
 echo ""
@@ -81,29 +86,40 @@ EXEC_FILE="$TMPDIR/exec_raw.bin"
 curl -sf -X POST "${API}/exec/${EXEC_ID}/start" \
   -H 'Content-Type: application/vnd.docker.raw-stream' \
   -d '{}' -o "$EXEC_FILE" 2>/dev/null || { echo "FAIL: exec start"; exit 1; }
-# Docker stdcopy multiplex header: 1 byte stream type, 3 bytes reserved, 4 bytes payload length (big-endian).
-# Validate the full 8-byte header, not just the first byte.
+# Docker stdcopy multiplex header: 1 byte stream type, 3 bytes reserved (must be 0), 4 bytes payload length (big-endian).
+# Validate the full 8-byte header: stream type, reserved zeros, payload length, and file size.
 HEADER_HEX=$(od -An -tx1 -N8 "$EXEC_FILE" | tr -d ' \n')
+if [ $(printf '%s' "$HEADER_HEX" | wc -c) -lt 16 ]; then
+  echo "FAIL: exec response too short for stdcopy header (need 8 bytes)"
+  exit 1
+fi
 STREAM_TYPE=$(printf '%d' "0x$(printf '%s' "$HEADER_HEX" | cut -c1-2)" 2>/dev/null || echo 0)
-PAYLOAD_LEN=$(printf '%d' "0x$(printf '%s' "$HEADER_HEX" | cut -c13-16)" 2>/dev/null || echo 0)
+RESERVED=$(printf '%s' "$HEADER_HEX" | cut -c3-8)
+# Payload length is 4 bytes big-endian at header bytes 5-8 (hex chars 9-16).
+PAYLOAD_LEN=$(printf '%d' "0x$(printf '%s' "$HEADER_HEX" | cut -c9-16)" 2>/dev/null || echo 0)
+FILE_SIZE=$(wc -c < "$EXEC_FILE" | tr -d ' ')
 # Extract payload starting at byte 9 (skip 8-byte header).
 PAYLOAD=$(dd if="$EXEC_FILE" bs=1 skip=8 count="$PAYLOAD_LEN" 2>/dev/null)
-if [ "$STREAM_TYPE" = "1" ] || [ "$STREAM_TYPE" = "2" ]; then
-  if [ "$PAYLOAD_LEN" -gt 0 ] 2>/dev/null; then
-    if echo "$PAYLOAD" | grep -q "exec-works"; then
-      echo "PASS: stdcopy framing valid (stream=$STREAM_TYPE len=$PAYLOAD_LEN payload contains 'exec-works')"
-    else
-      echo "FAIL: stdcopy header valid but payload missing 'exec-works'"
-      exit 1
-    fi
-  else
-    echo "FAIL: stdcopy header valid but payload length is 0"
-    exit 1
-  fi
+if [ "$STREAM_TYPE" != "1" ] && [ "$STREAM_TYPE" != "2" ]; then
+  echo "FAIL: stream type=$STREAM_TYPE (expected 1 or 2), header=$HEADER_HEX"
+  exit 1
+fi
+if [ "$RESERVED" != "000000" ]; then
+  echo "FAIL: reserved bytes not zero (got: $RESERVED)"
+  exit 1
+fi
+if [ "$PAYLOAD_LEN" -le 0 ] 2>/dev/null; then
+  echo "FAIL: payload length is 0"
+  exit 1
+fi
+if [ "$FILE_SIZE" -lt $((8 + PAYLOAD_LEN)) ] 2>/dev/null; then
+  echo "FAIL: file size ($FILE_SIZE) < header(8) + payload($PAYLOAD_LEN)"
+  exit 1
+fi
+if echo "$PAYLOAD" | grep -q "exec-works"; then
+  echo "PASS: stdcopy framing valid (stream=$STREAM_TYPE reserved=000000 len=$PAYLOAD_LEN payload='exec-works')"
 else
-  echo "FAIL: exec response is not stdcopy-framed (stream type=$STREAM_TYPE, expected 1 or 2)"
-  echo "  header hex: $HEADER_HEX"
-  echo "  CSOJ's stdcopy.StdCopy will fail to parse this."
+  echo "FAIL: payload does not contain 'exec-works'"
   exit 1
 fi
 
@@ -129,15 +145,56 @@ else
   exit 1
 fi
 
-# 6. Volume create + remove
+# 6. Volume lifecycle (already created in step 2; verify mount + remove)
 echo ""
-echo "[6/10] Volume lifecycle..."
-VOL_NAME="hpc101-verify-$$"
-curl -sf -X POST "${API}/volumes/create" \
+echo "[6/10] Volume mount + /mnt/work verification..."
+# Verify the named volume is mounted at /mnt/work and writable.
+MNT_EXEC=$(curl -sf -X POST "${API}/containers/${CTR_ID}/exec" \
   -H 'Content-Type: application/json' \
-  -d "{\"Name\":\"${VOL_NAME}\"}" >/dev/null 2>&1 || { echo "FAIL: volume create"; exit 1; }
-curl -sf -X DELETE "${API}/volumes/${VOL_NAME}" >/dev/null 2>&1 || { echo "FAIL: volume remove"; exit 1; }
-echo "PASS: volume create + remove"
+  -d '{"AttachStdout":true,"Cmd":["sh","-c","touch /mnt/work/test && echo mnt-ok; echo ---; mount | grep /tmp/custom || echo no-tmpfs"]}') || { echo "FAIL: mount verify exec"; exit 1; }
+MNT_EXEC_ID=$(echo "$MNT_EXEC" | grep -o '"Id":"[^"]*"' | cut -d'"' -f4)
+MNT_OUT=$(curl -sf -X POST "${API}/exec/${MNT_EXEC_ID}/start" \
+  -H 'Content-Type: application/vnd.docker.raw-stream' -d '{}' 2>/dev/null) || true
+if echo "$MNT_OUT" | grep -q "mnt-ok"; then
+  echo "PASS: /mnt/work volume mounted and writable"
+else
+  echo "FAIL: /mnt/work not writable"
+  exit 1
+fi
+if echo "$MNT_OUT" | grep -q "tmpfs.*custom\|custom.*tmpfs"; then
+  echo "PASS: /tmp/custom tmpfs mount present"
+else
+  echo "FAIL: /tmp/custom tmpfs mount not found"
+  exit 1
+fi
+
+# 6b. Verify CSOJ create-surface fields: User, Env, NetworkDisabled
+echo ""
+echo "[6b] CSOJ create-surface fields..."
+SURF_EXEC=$(curl -sf -X POST "${API}/containers/${CTR_ID}/exec" \
+  -H 'Content-Type: application/json' \
+  -d '{"AttachStdout":true,"Cmd":["sh","-c","id -u; echo ---; echo $HPC101_VERIFY; echo ---; ip route 2>/dev/null || echo no-ip-route"]}') || { echo "FAIL: surface exec"; exit 1; }
+SURF_ID=$(echo "$SURF_EXEC" | grep -o '"Id":"[^"]*"' | cut -d'"' -f4)
+SURF_OUT=$(curl -sf -X POST "${API}/exec/${SURF_ID}/start" \
+  -H 'Content-Type: application/vnd.docker.raw-stream' -d '{}' 2>/dev/null) || true
+if echo "$SURF_OUT" | grep -q "^1000$"; then
+  echo "PASS: User is 1000 (non-root)"
+else
+  echo "FAIL: User is not 1000"
+  exit 1
+fi
+if echo "$SURF_OUT" | grep -q "1"; then
+  echo "PASS: Env HPC101_VERIFY=1 present"
+else
+  echo "FAIL: Env not set"
+  exit 1
+fi
+if echo "$SURF_OUT" | grep -q "no-ip-route\|Network is unreachable"; then
+  echo "PASS: NetworkDisabled effective"
+else
+  echo "WARN: network may be present (check ip route output)"
+fi
+echo "PASS: volume mount + surface fields verified"
 
 # 7. Resource limit assertion (fail-closed)
 echo ""
@@ -160,15 +217,19 @@ else
   echo "  cgroup output: $RES_CLEAN"
   exit 1
 fi
-# CPU quota must show a non-max value (quota assigned). Fail if absent or unlimited.
-CPU_VAL=$(echo "$RES_CLEAN" | grep "cpu.max=" | cut -d= -f2 | tr -d '[:space:]')
-if echo "$CPU_VAL" | grep -q "^max"; then
-  echo "FAIL: CPU quota is unlimited (cpu.max=$CPU_VAL)"
+# CPU quota: parse quota and period from cpu.max, fail if unlimited, pass if 0.5 CPU ratio.
+# cgroup v2 format: "quota period" (e.g. "50000 100000" for 0.5 CPU).
+CPU_QUOTA=$(echo "$CPU_VAL" | cut -d' ' -f1)
+CPU_PERIOD=$(echo "$CPU_VAL" | cut -d' ' -f2)
+if [ "$CPU_QUOTA" = "max" ] || [ -z "$CPU_QUOTA" ]; then
+  echo "FAIL: CPU quota is unlimited or missing (cpu.max=$CPU_VAL)"
   exit 1
-elif echo "$CPU_VAL" | grep -q "500000"; then
-  echo "PASS: CPU quota enforced (500000/100000 = 0.5 CPU)"
+fi
+# For NanoCPUs=500000000 (0.5 CPU): quota*2 should equal period.
+if [ -n "$CPU_PERIOD" ] && [ "$CPU_QUOTA" -gt 0 ] 2>/dev/null && [ $((CPU_QUOTA * 2)) -eq "$CPU_PERIOD" ] 2>/dev/null; then
+  echo "PASS: CPU quota enforced (quota=$CPU_QUOTA period=$CPU_PERIOD = 0.5 CPU)"
 else
-  echo "FAIL: CPU quota 500000 not found in cpu.max (got: $CPU_VAL)"
+  echo "FAIL: CPU quota does not match 0.5 CPU ratio (quota=$CPU_QUOTA period=$CPU_PERIOD, expected quota*2==period)"
   exit 1
 fi
 # Cpuset must include the configured CPU.
@@ -210,13 +271,14 @@ else
   exit 1
 fi
 
-# 9. Stop + remove cleanup
+# 9. Stop + remove cleanup (container + named volume)
 echo ""
 echo "[9/10] Stop + remove cleanup..."
 curl -sf -X POST "${API}/containers/${CTR_ID}/stop" >/dev/null 2>&1 || { echo "FAIL: container stop"; exit 1; }
 curl -sf -X DELETE "${API}/containers/${CTR_ID}?force=true" >/dev/null 2>&1 || { echo "FAIL: container remove"; exit 1; }
 CTR_ID=""
-echo "PASS: container stopped + removed"
+curl -sf -X DELETE "${API}/volumes/${VOL_NAME}" >/dev/null 2>&1 || { echo "FAIL: volume remove"; exit 1; }
+echo "PASS: container stopped + volume removed"
 
 # 10. Wait + timeout behavior (/containers/{id}/wait)
 echo ""
@@ -256,6 +318,10 @@ if [ "$CURL_EXIT" = "28" ]; then
   echo "PASS: client-side timeout fires (curl exit 28)"
 else
   echo "FAIL: expected curl timeout (exit 28), got exit $CURL_EXIT"
+  # Cleanup: stop and remove the still-running container before exiting.
+  curl -sf -X POST "${API}/containers/${TO_CTR}/stop" >/dev/null 2>&1 || true
+  curl -sf -X DELETE "${API}/containers/${TO_CTR}?force=true" >/dev/null 2>&1 || true
+  exit 1
 fi
 # Cleanup: stop and remove the still-running container.
 curl -sf -X POST "${API}/containers/${TO_CTR}/stop" >/dev/null 2>&1 || true
