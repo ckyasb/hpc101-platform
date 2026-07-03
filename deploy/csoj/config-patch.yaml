@@ -1,0 +1,61 @@
+# CSOJ Configuration Overlay for hpc101-platform
+#
+# CSOJ is deployed as a separate Deployment alongside the podman runtime.
+# Its config.yaml points DockerConfig.Host at the podman-runtime service.
+#
+# Per plan: CSOJ is ZERO-CODE-CHANGE (only config.yaml modified).
+# DockerManager (internal/judger/docker.go) uses github.com/docker/docker/client
+# with client.WithHost(cfg.Host), which accepts any docker-compatible endpoint.
+# Pointing it at the podman-runtime TCP service reuses it unchanged.
+#
+# Cluster config: CSOJ's cluster/node model maps to the podman runtime.
+# The single podman-runtime endpoint acts as the sole "node" CSOJ schedules onto.
+---
+# CSOJ main config (config.yaml) overlay
+# Merge this with CSOJ's default config.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: csoj-config
+  namespace: hpc101-platform
+data:
+  config.yaml: |
+    # CSOJ configuration — zero-code-change integration with hpc101-platform
+    listen: ":8080"
+    admin:
+      enabled: true
+      listen: ":8081"
+
+    # Database: SQLite (zero-change default)
+    database:
+      driver: sqlite
+      dsn: /data/csoj.db
+
+    # Auth: local login (no gitlab OIDC — adapter uses internal credential)
+    auth:
+      local:
+        enabled: true
+      jwt:
+        secret: ${CSOJ_JWT_SECRET}
+        expire_hours: 720  # 30 days for course duration
+
+    # Cluster: single node = the podman runtime service
+    # This is the KEY reuse seam: CSOJ's DockerManager uses DockerConfig.Host
+    # via client.WithHost(cfg.Host), accepting any docker-compatible endpoint.
+    cluster:
+      - name: hpc101-runtime
+        nodes:
+          - name: podman-0
+            cpu: 4
+            memory: 8192  # MB
+            docker:
+              host: "tcp://podman-runtime.hpc101-runtime.svc.cluster.local:2375"
+              tls_verify: false
+              ca_cert: ""
+              cert: ""
+              key: ""
+
+    # CORS: allow the bastion/controller origin
+    cors:
+      allowed_origins:
+        - "http://localhost:8080"

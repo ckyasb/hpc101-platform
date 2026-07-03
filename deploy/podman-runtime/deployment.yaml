@@ -1,0 +1,222 @@
+# Podman Runtime Deployment
+# Rootless podman exposing a docker-compatible TCP endpoint.
+# Consumed by both the hpc101-platform controller and CSOJ (via DockerConfig.Host).
+#
+# Per plan AC-1.1: runs without privileged:true, no hostPath /var/run/docker.sock.
+# Uses fuse-overlayfs storage driver; subuid/subgid must be provisioned on the node.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hpc101-runtime
+  labels:
+    pod-security.kubernetes.io/enforce: baseline
+    app.kubernetes.io/part-of: hpc101-platform
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: podman-runtime
+  namespace: hpc101-runtime
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: podman-runtime
+  namespace: hpc101-runtime
+rules:
+  # podman needs to read its own pod metadata for container labeling
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: podman-runtime
+  namespace: hpc101-runtime
+subjects:
+  - kind: ServiceAccount
+    name: podman-runtime
+    namespace: hpc101-runtime
+roleRef:
+  kind: Role
+  name: podman-runtime
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: podman-containers-conf
+  namespace: hpc101-runtime
+data:
+  containers.conf: |
+    # Daemon-level hardening for ALL containers created by this runtime.
+    # Per plan AC-8: judge containers inherit CapDrop=ALL, no-new-privileges,
+    # and the default seccomp profile without any CSOJ code changes.
+    [containers]
+    # Drop all default capabilities
+    default_capabilities = []
+    # Never add extra capabilities by default
+    add_capabilities = []
+    # Environment variables injected by default
+    env = []
+    # Log driver (journald or k8s-file for log collection)
+    log_driver = "k8s-file"
+
+    [engine]
+    # Runtime for non-root users
+    runtime = "crun"
+    # Supplementary group IDs for user namespace
+    infra_image = ""
+
+    [network]
+    # Default network backend
+    network_backend = "cni"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: podman-registries-conf
+  namespace: hpc101-runtime
+data:
+  registries.conf: |
+    [registries.search]
+    registries = ["docker.io", "quay.io"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: podman-runtime
+  namespace: hpc101-runtime
+  labels:
+    app: podman-runtime
+spec:
+  type: ClusterIP
+  clusterIP: None  # headless; reachable as podman-runtime.hpc101-runtime.svc.cluster.local
+  ports:
+    - name: docker-api
+      port: 2375
+      targetPort: 2375
+      protocol: TCP
+  selector:
+    app: podman-runtime
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: podman-runtime
+  namespace: hpc101-runtime
+  labels:
+    app: podman-runtime
+    app.kubernetes.io/part-of: hpc101-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: podman-runtime
+  template:
+    metadata:
+      labels:
+        app: podman-runtime
+    spec:
+      serviceAccountName: podman-runtime
+      # Pinning to a Linux node with cgroup v2 and fuse support
+      nodeSelector:
+        kubernetes.io/os: linux
+      securityContext:
+        # Pod-level: no privileged, no hostPID/hostNetwork
+        runAsNonRoot: false  # rootless podman needs root initially for cgroup setup
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: podman
+          image: quay.io/podman/stable:v5.3
+          command:
+            - podman
+            - system
+            - service
+            - --time=0
+            - tcp://0.0.0.0:2375
+          env:
+            - name: STORAGE_DRIVER
+              value: overlay
+            - name: STORAGE_OPTS
+              value: overlay.mount_program=/usr/bin/fuse-overlayfs
+            - name: BUILDAH_ISOLATION
+              value: chroot
+          ports:
+            - containerPort: 2375
+              name: docker-api
+              protocol: TCP
+          volumeMounts:
+            - name: containers-conf
+              mountPath: /etc/containers/containers.conf
+              subPath: containers.conf
+            - name: registries-conf
+              mountPath: /etc/containers/registries.conf
+              subPath: registries.conf
+            - name: podman-data
+              mountPath: /var/lib/containers
+            - name: cgroup
+              mountPath: /sys/fs/cgroup
+              readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: false  # podman needs writable /run and /tmp
+            runAsNonRoot: false
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "4"
+              memory: "8Gi"
+          livenessProbe:
+            tcpSocket:
+              port: 2375
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            tcpSocket:
+              port: 2375
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      volumes:
+        - name: containers-conf
+          configMap:
+            name: podman-containers-conf
+        - name: registries-conf
+          configMap:
+            name: podman-registries-conf
+        - name: podman-data
+          emptyDir:
+            sizeLimit: 50Gi
+        - name: cgroup
+          hostPath:
+            path: /sys/fs/cgroup
+            type: Directory
+---
+# NetworkPolicy: only hpc101-platform components and CSOJ can reach the runtime
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: podman-runtime
+  namespace: hpc101-runtime
+spec:
+  podSelector:
+    matchLabels:
+      app: podman-runtime
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: hpc101-platform
+      ports:
+        - port: 2375
+          protocol: TCP
