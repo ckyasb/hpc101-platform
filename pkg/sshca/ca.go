@@ -109,6 +109,8 @@ type SignUserCertRequest struct {
 //   - Key ID = principal
 //   - Critical option: force-command="/bin/false" (valid OpenSSH user-cert option;
 //     prevents interactive shell on bastion)
+//   - Extension: permit-port-forwarding (required for ssh -J ProxyJump to work;
+//     without it, OpenSSH refuses direct-tcpip channel opens through the bastion)
 //   - Valid from now until now+ValidDuration
 //
 // Container target binding is NOT in the certificate. It is enforced by the
@@ -116,6 +118,10 @@ type SignUserCertRequest struct {
 // and returns "permitopen=\"host:port\" <principal>". This is the correct
 // mechanism — permitopen is an authorized_keys/sshd_config option, not a
 // valid user certificate critical option, and would cause cert rejection.
+//
+// The permit-port-forwarding extension is essential: without it, ssh -J,
+// VSCode Remote-SSH, scp (SFTP mode), sftp, and port forwarding (-L/-R/-D)
+// all fail because the bastion refuses to open direct-tcpip channels.
 func (ca *CA) SignUserCert(req SignUserCertRequest) (*ssh.Certificate, error) {
 	if req.ValidDuration <= 0 {
 		return nil, fmt.Errorf("sshca: ValidDuration must be positive")
@@ -134,6 +140,9 @@ func (ca *CA) SignUserCert(req SignUserCertRequest) (*ssh.Certificate, error) {
 		Permissions: ssh.Permissions{
 			CriticalOptions: map[string]string{
 				"force-command": "/bin/false",
+			},
+			Extensions: map[string]string{
+				"permit-port-forwarding": "",
 			},
 		},
 	}

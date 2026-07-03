@@ -190,13 +190,13 @@ func TestNoUnsupportedCriticalOptions(t *testing.T) {
 	// force-command, source-address, permit-agent-forwarding,
 	// permit-port-forwarding, permit-pty, permit-user-rc, permit-X11-forwarding
 	validOpts := map[string]bool{
-		"force-command":            true,
-		"source-address":           true,
-		"permit-agent-forwarding":  true,
-		"permit-port-forwarding":   true,
-		"permit-pty":               true,
-		"permit-user-rc":           true,
-		"permit-X11-forwarding":    true,
+		"force-command":           true,
+		"source-address":          true,
+		"permit-agent-forwarding": true,
+		"permit-port-forwarding":  true,
+		"permit-pty":              true,
+		"permit-user-rc":          true,
+		"permit-X11-forwarding":   true,
 	}
 
 	for opt := range cert.Permissions.CriticalOptions {
@@ -206,8 +206,13 @@ func TestNoUnsupportedCriticalOptions(t *testing.T) {
 	}
 
 	for opt := range cert.Permissions.Extensions {
-		t.Errorf("cert contains extension %q with value %q — extensions are allowed but should be intentional",
-			opt, cert.Permissions.Extensions[opt])
+		// permit-port-forwarding is a required extension for ssh -J / ProxyJump.
+		if opt != "permit-port-forwarding" {
+			t.Errorf("cert contains unexpected extension %q with value %q", opt, cert.Permissions.Extensions[opt])
+		}
+	}
+	if _, ok := cert.Permissions.Extensions["permit-port-forwarding"]; !ok {
+		t.Error("cert missing required extension permit-port-forwarding")
 	}
 }
 
