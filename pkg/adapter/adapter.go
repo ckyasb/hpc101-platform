@@ -304,7 +304,7 @@ func (c *Client) StreamLogs(ctx context.Context, submissionID, containerID strin
 // problem via POST /api/v1/contests/:contestID/problems.
 // Routes from vendor/csoj/internal/api/admin/router.go:66,72.
 func CSOJProblemID(contestID, platformProblemID string) string {
-	return contestID + "-" + platformProblemID
+	return contestID + "--" + platformProblemID
 }
 
 // SyncProblem ensures the platform problem has a corresponding CSOJ

@@ -162,6 +162,7 @@ func newHandler(store LeaseStore, runtime ContainerCreator, submission Submissio
 	h.mux.HandleFunc("/api/v1/keys", h.handleKeys)
 	h.mux.HandleFunc("/api/v1/ssh-info", h.handleSSHInfo)
 	h.mux.HandleFunc("/api/v1/bastion/roster", h.handleBastionRoster)
+	h.mux.HandleFunc("/api/v1/submissions/logs/", h.handleSubmissionLogs)
 	h.mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
@@ -431,17 +432,24 @@ func (h *Handler) handleSubmissions(w http.ResponseWriter, r *http.Request) {
 
 	// Track the submission for later result retrieval.
 	principal := r.URL.Query().Get("principal")
+	course := r.URL.Query().Get("course")
 	if principal == "" {
 		principal = "anonymous"
 	}
-	h.mu.Lock()
-	h.submissions[id] = &SubmissionRecord{
+	rec := &SubmissionRecord{
 		ID:        id,
 		ProblemID: req.ProblemID,
 		Principal: principal,
 		Submitted: time.Now().UTC().Format(time.RFC3339),
 	}
+	h.mu.Lock()
+	h.submissions[id] = rec
 	h.mu.Unlock()
+	// Persist in store if available.
+	if s, ok := h.store.(interface{ SaveSubmission(*SubmissionRecord) error }); ok {
+		_ = s.SaveSubmission(rec)
+	}
+	_ = course // used by adapter for scoped CSOJ ID when submitting
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
@@ -490,6 +498,59 @@ func (h *Handler) handleSubmissionByID(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"submission_id": id, "status": "Queued"})
+}
+
+// handleSubmissionLogs handles GET /api/v1/submissions/logs/{id} — stream container logs.
+func (h *Handler) handleSubmissionLogs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	id := strings.TrimPrefix(r.URL.Path, "/api/v1/submissions/logs/")
+	if id == "" {
+		http.Error(w, `{"error":"missing submission id"}`, http.StatusBadRequest)
+		return
+	}
+	// Look up submission to find container IDs for log streaming.
+	var rec *SubmissionRecord
+	h.mu.Lock()
+	rec = h.submissions[id]
+	h.mu.Unlock()
+	if rec == nil {
+		// Try store
+		if s, ok := h.store.(interface{ GetSubmission(string) (*SubmissionRecord, error) }); ok {
+			r, err := s.GetSubmission(id)
+			if err == nil {
+				rec = r
+			}
+		}
+	}
+	if rec == nil || rec.Result.SubmissionID == "" {
+		http.Error(w, `{"error":"submission not found or has no containers"}`, http.StatusNotFound)
+		return
+	}
+	// Stream logs via the adapter if it supports it.
+	type logStreamer interface {
+		StreamLogs(ctx context.Context, submissionID, containerID string, cb func(stream, data string) error) error
+	}
+	if streamer, ok := interface{}(h.submission).(logStreamer); ok {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		err := streamer.StreamLogs(r.Context(), rec.Result.SubmissionID, rec.Result.SubmissionID+"-0",
+			func(stream, data string) error {
+				fmt.Fprintf(w, "[%s] %s\n", stream, data)
+				if flusher != nil {
+					flusher.Flush()
+				}
+				return nil
+			})
+		if err != nil {
+			fmt.Fprintf(w, "\nerror: %v\n", err)
+		}
+		return
+	}
+	http.Error(w, `{"error":"log streaming not available"}`, http.StatusServiceUnavailable)
 }
 
 // handleKeys handles POST /api/v1/keys — register a student SSH public key.

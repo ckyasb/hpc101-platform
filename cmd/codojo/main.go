@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 func getControllerURL() string {
@@ -65,6 +66,8 @@ func main() {
 		showScores()
 	case "submit":
 		submit(os.Args[2:])
+	case "logs":
+		fetchLogs(os.Args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown: %s\n", os.Args[1])
 		os.Exit(1)
@@ -79,6 +82,8 @@ func usage() {
 		"  ssh-info", "  release",
 		"  problem", "  score",
 		"  submit <problem-id> <file>...",
+		"  logs <submission-id>",
+		"  score [submission-id]",
 	} {
 		fmt.Fprintln(os.Stderr, s)
 	}
@@ -245,6 +250,11 @@ func listProblems() {
 }
 
 func showScores() {
+	// If a submission ID is provided, poll until terminal and print result.
+	if len(os.Args) > 2 {
+		pollScore(os.Args[2])
+		return
+	}
 	resp, err := http.Get(getControllerURL() + "/api/v1/scores")
 	if err != nil {
 		fatal("GET scores: %v", err)
@@ -263,6 +273,50 @@ func showScores() {
 	}
 	for _, s := range scores {
 		fmt.Printf("  %v\n", s)
+	}
+}
+
+func pollScore(submissionID string) {
+	url := getControllerURL() + "/api/v1/submissions/" + submissionID
+	for i := 0; i < 60; i++ {
+		resp, err := http.Get(url)
+		if err != nil {
+			fatal("GET submission: %v", err)
+		}
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		var r map[string]interface{}
+		json.Unmarshal(b, &r)
+		status, _ := r["status"].(string)
+		if status == "Success" || status == "Failed" {
+			fmt.Printf("status: %s\nscore: %v\nperformance: %v\ninfo: %v\n",
+				status, r["score"], r["performance"], r["info"])
+			return
+		}
+		if status == "Queued" || status == "Running" {
+			fmt.Printf("\r%s...", status)
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		fmt.Printf("unknown status: %s\n%s\n", status, b)
+		return
+	}
+	fatal("timeout waiting for submission result")
+}
+
+func fetchLogs(args []string) {
+	if len(args) < 1 {
+		fatal("usage: logs <submission-id>")
+	}
+	url := getControllerURL() + "/api/v1/submissions/logs/" + args[0]
+	resp, err := http.Get(url)
+	if err != nil {
+		fatal("GET logs: %v", err)
+	}
+	defer resp.Body.Close()
+	_, err = io.Copy(os.Stdout, resp.Body)
+	if err != nil {
+		fatal("read logs: %v", err)
 	}
 }
 

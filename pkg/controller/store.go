@@ -8,15 +8,17 @@ import (
 )
 
 type serializedStore struct {
-	mu     sync.Mutex
-	leases map[string]*Lease
-	keys   map[string]string // principal → public key
+	mu          sync.Mutex
+	leases      map[string]*Lease
+	keys        map[string]string            // principal → public key
+	submissions map[string]*SubmissionRecord // submissionID → record
 }
 
 func NewSerializedStore() *serializedStore {
 	return &serializedStore{
-		leases: make(map[string]*Lease),
-		keys:   make(map[string]string),
+		leases:      make(map[string]*Lease),
+		keys:        make(map[string]string),
+		submissions: make(map[string]*SubmissionRecord),
 	}
 }
 
@@ -105,4 +107,34 @@ func (s *serializedStore) ReleaseLeaseIf(principal string, trigger lease.Trigger
 	}
 	s.leases[principal] = l
 	return nil
+}
+
+// SaveSubmission persists a submission record in the store.
+func (s *serializedStore) SaveSubmission(rec *SubmissionRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.submissions[rec.ID] = rec
+	return nil
+}
+
+// GetSubmission retrieves a persisted submission record.
+func (s *serializedStore) GetSubmission(id string) (*SubmissionRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok := s.submissions[id]
+	if !ok {
+		return nil, fmt.Errorf("submission %s not found", id)
+	}
+	return r, nil
+}
+
+// AllSubmissions returns all persisted submission records.
+func (s *serializedStore) AllSubmissions() []*SubmissionRecord {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result := make([]*SubmissionRecord, 0, len(s.submissions))
+	for _, r := range s.submissions {
+		result = append(result, r)
+	}
+	return result
 }
