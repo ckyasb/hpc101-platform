@@ -592,17 +592,31 @@ func (h *Handler) handleSubmissionLogs(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	if rec == nil || rec.Result.SubmissionID == "" {
-		http.Error(w, `{"error":"submission not found or has no containers"}`, http.StatusNotFound)
+	if rec == nil {
+		http.Error(w, `{"error":"submission not found"}`, http.StatusNotFound)
 		return
 	}
-	// If no containers are cached, query the adapter once for the latest result.
+
+	// Query the adapter for the latest result if we don't have containers yet.
 	if len(rec.Result.Containers) == 0 && h.submission != nil {
-		if result, err := h.submission.QueryResult(r.Context(), id); err == nil {
-			rec.Result = *result
-			if s, ok2 := h.store.(interface{ SaveSubmission(*SubmissionRecord) error }); ok2 {
-				_ = s.SaveSubmission(rec)
-			}
+		queryID := rec.Result.SubmissionID
+		if queryID == "" {
+			queryID = rec.ID
+		}
+		result, err := h.submission.QueryResult(r.Context(), queryID)
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"query result: %s"}`, err.Error()), http.StatusBadGateway)
+			return
+		}
+		rec.Result = *result
+		if rec.Result.SubmissionID == "" {
+			rec.Result.SubmissionID = queryID
+		}
+		h.mu.Lock()
+		h.submissions[id] = rec
+		h.mu.Unlock()
+		if s, ok2 := h.store.(interface{ SaveSubmission(*SubmissionRecord) error }); ok2 {
+			_ = s.SaveSubmission(rec)
 		}
 	}
 	if len(rec.Result.Containers) == 0 {

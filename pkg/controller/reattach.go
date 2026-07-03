@@ -79,21 +79,14 @@ func ReattachLeases(store LeaseStore, client DiscoveryClient) (ReattachResult, e
 
 	for _, c := range containers {
 		owner := c.Labels["platform.io/owner"]
-		if owner == "" || c.Name == "" || !strings.HasPrefix(c.Name, "svc-") {
+		course := c.Labels["platform.io/course"]
+		problem := c.Labels["platform.io/problem"]
+		if owner == "" || course == "" || problem == "" || c.Name == "" || !strings.HasPrefix(c.Name, "svc-") {
 			result.Orphaned++
-			log.Printf("reattach: orphan container %s (missing owner/name or not svc- prefixed)", c.ID)
+			log.Printf("reattach: orphan container %s (incomplete labels: owner=%s course=%s problem=%s)", c.ID, owner, course, problem)
 			continue
 		}
-
-		// Build service identity from labels for precise resource matching.
-		svcIdentity := owner
-		if course := c.Labels["platform.io/course"]; course != "" {
-			svcIdentity = owner + "/" + course
-			if problem := c.Labels["platform.io/problem"]; problem != "" {
-				svcIdentity = svcIdentity + "/" + problem
-			}
-		}
-		activeOwners[svcIdentity] = true
+		activeOwners[owner+"/"+course+"/"+problem] = true
 		l := lease.NewLease(owner, c.ID, c.Name, c.Host, c.Port, 8*time.Hour, 30*time.Minute)
 		if err := store.UpsertLease(l); err != nil {
 			log.Printf("reattach: upsert lease for %s: %v", owner, err)
@@ -116,14 +109,10 @@ func ReattachLeases(store LeaseStore, client DiscoveryClient) (ReattachResult, e
 				continue
 			}
 			owner := v.Labels["platform.io/owner"]
-			svcID := owner
-			if course := v.Labels["platform.io/course"]; course != "" {
-				svcID = owner + "/" + course
-				if problem := v.Labels["platform.io/problem"]; problem != "" {
-					svcID = svcID + "/" + problem
-				}
-			}
-			if owner == "" || !activeOwners[svcID] {
+			course := v.Labels["platform.io/course"]
+			problem := v.Labels["platform.io/problem"]
+			svcID := owner + "/" + course + "/" + problem
+			if owner == "" || course == "" || problem == "" || !activeOwners[svcID] {
 				result.OrphanVolumes++
 				if hasCleaner {
 					if err := cleaner.RemoveVolume(context.Background(), v.Name); err != nil {
@@ -150,14 +139,10 @@ func ReattachLeases(store LeaseStore, client DiscoveryClient) (ReattachResult, e
 				continue
 			}
 			owner := n.Labels["platform.io/owner"]
-			svcID := owner
-			if course := n.Labels["platform.io/course"]; course != "" {
-				svcID = owner + "/" + course
-				if problem := n.Labels["platform.io/problem"]; problem != "" {
-					svcID = svcID + "/" + problem
-				}
-			}
-			if owner == "" || !activeOwners[svcID] {
+			course := n.Labels["platform.io/course"]
+			problem := n.Labels["platform.io/problem"]
+			svcID := owner + "/" + course + "/" + problem
+			if owner == "" || course == "" || problem == "" || !activeOwners[svcID] {
 				result.OrphanNetworks++
 				if hasCleaner {
 					if err := cleaner.RemoveNetwork(context.Background(), n.ID); err != nil {

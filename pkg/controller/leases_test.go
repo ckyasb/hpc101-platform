@@ -612,7 +612,7 @@ func TestReattachLeases(t *testing.T) {
 	s := NewSerializedStore()
 	d := &fakeDiscovery{containers: []DiscoveryContainer{
 		{ID: "ctr-1", Name: "svc-alice", Host: "10.0.0.5", Port: 2222,
-			Labels: map[string]string{"platform.io/kind": "service", "platform.io/owner": "alice"}},
+			Labels: map[string]string{"platform.io/kind": "service", "platform.io/owner": "alice", "platform.io/course": "cs101", "platform.io/problem": "hw1"}},
 		{ID: "ctr-2", Name: "orphan", Host: "10.0.0.6", Port: 2222,
 			Labels: map[string]string{"platform.io/kind": "service"}}, // no owner
 	}}
@@ -637,7 +637,7 @@ func TestReattachRejectsNonSvcPrefix(t *testing.T) {
 	s := NewSerializedStore()
 	d := &fakeDiscovery{containers: []DiscoveryContainer{
 		{ID: "ctr-1", Name: "csj-judge-1", Host: "10.0.0.5", Port: 2222,
-			Labels: map[string]string{"platform.io/kind": "service", "platform.io/owner": "alice"}},
+			Labels: map[string]string{"platform.io/kind": "service", "platform.io/owner": "alice", "platform.io/course": "cs101", "platform.io/problem": "hw1"}},
 	}}
 
 	result, err := ReattachLeases(s, d)
@@ -664,12 +664,12 @@ func TestReattachReclaimsVolumes(t *testing.T) {
 	s := NewSerializedStore()
 	d := &fakeDiscovery{
 		containers: []DiscoveryContainer{
-			{ID: "c1", Name: "svc-alice", Host: "h", Port: 22, Labels: map[string]string{"platform.io/kind": "service", "platform.io/owner": "alice"}},
+			{ID: "c1", Name: "svc-alice", Host: "h", Port: 22, Labels: map[string]string{"platform.io/kind": "service", "platform.io/owner": "alice", "platform.io/course": "cs101", "platform.io/problem": "hw1"}},
 		},
 		volumes: []DiscoveryVolume{
-			{Name: "svc-alice-vol", Driver: "local", Labels: map[string]string{"platform.io/kind": "service", "platform.io/owner": "alice"}},
-			{Name: "svc-orphan-vol", Driver: "local", Labels: map[string]string{"platform.io/kind": "service", "platform.io/owner": "bob"}},
-			{Name: "csj-judge-vol", Driver: "local", Labels: map[string]string{"platform.io/kind": "service", "platform.io/owner": "bob"}},
+			{Name: "svc-alice-vol", Driver: "local", Labels: map[string]string{"platform.io/kind": "service", "platform.io/owner": "alice", "platform.io/course": "cs101", "platform.io/problem": "hw1"}},
+			{Name: "svc-orphan-vol", Driver: "local", Labels: map[string]string{"platform.io/kind": "service", "platform.io/owner": "bob", "platform.io/course": "cs102", "platform.io/problem": "hw2"}},
+			{Name: "csj-judge-vol", Driver: "local", Labels: map[string]string{"platform.io/kind": "service", "platform.io/owner": "bob", "platform.io/course": "cs102", "platform.io/problem": "hw2"}},
 		},
 	}
 	result, err := ReattachLeases(s, d)
@@ -691,10 +691,10 @@ func TestReattachPreservesCSJResources(t *testing.T) {
 	s := NewSerializedStore()
 	d := &fakeDiscovery{
 		containers: []DiscoveryContainer{
-			{ID: "c1", Name: "csj-judge-1", Host: "h", Port: 0, Labels: map[string]string{"platform.io/kind": "service", "platform.io/owner": "alice"}},
+			{ID: "c1", Name: "csj-judge-1", Host: "h", Port: 0, Labels: map[string]string{"platform.io/kind": "service", "platform.io/owner": "alice", "platform.io/course": "cs101", "platform.io/problem": "hw1"}},
 		},
 		volumes: []DiscoveryVolume{
-			{Name: "csj-vol-1", Driver: "local", Labels: map[string]string{"platform.io/kind": "service", "platform.io/owner": "alice"}},
+			{Name: "csj-vol-1", Driver: "local", Labels: map[string]string{"platform.io/kind": "service", "platform.io/owner": "alice", "platform.io/course": "cs101", "platform.io/problem": "hw1"}},
 		},
 		networks: []DiscoveryNetwork{
 			{ID: "n1", Name: "csj-net-1", Driver: "bridge", Labels: map[string]string{"platform.io/kind": "service"}},
@@ -720,11 +720,11 @@ func TestReattachNetworkDiscovery(t *testing.T) {
 	s := NewSerializedStore()
 	d := &fakeDiscovery{
 		containers: []DiscoveryContainer{
-			{ID: "c1", Name: "svc-alice", Host: "h", Port: 22, Labels: map[string]string{"platform.io/kind": "service", "platform.io/owner": "alice"}},
+			{ID: "c1", Name: "svc-alice", Host: "h", Port: 22, Labels: map[string]string{"platform.io/kind": "service", "platform.io/owner": "alice", "platform.io/course": "cs101", "platform.io/problem": "hw1"}},
 		},
 		networks: []DiscoveryNetwork{
-			{ID: "n1", Name: "svc-alice-net", Driver: "bridge", Labels: map[string]string{"platform.io/kind": "service", "platform.io/owner": "alice"}},
-			{ID: "n2", Name: "svc-orphan-net", Driver: "bridge", Labels: map[string]string{"platform.io/kind": "service", "platform.io/owner": "charlie"}},
+			{ID: "n1", Name: "svc-alice-net", Driver: "bridge", Labels: map[string]string{"platform.io/kind": "service", "platform.io/owner": "alice", "platform.io/course": "cs101", "platform.io/problem": "hw1"}},
+			{ID: "n2", Name: "svc-orphan-net", Driver: "bridge", Labels: map[string]string{"platform.io/kind": "service", "platform.io/owner": "charlie", "platform.io/course": "cs103", "platform.io/problem": "hw3"}},
 		},
 	}
 	result, err := ReattachLeases(s, d)
@@ -769,13 +769,13 @@ func TestReattachReclaimsWithCleaner(t *testing.T) {
 	s := NewSerializedStore()
 	d := &fakeDiscovery{
 		containers: []DiscoveryContainer{
-			{ID: "c1", Name: "svc-alice", Host: "h", Port: 22, Labels: map[string]string{"platform.io/kind": "service", "platform.io/owner": "alice"}},
+			{ID: "c1", Name: "svc-alice", Host: "h", Port: 22, Labels: map[string]string{"platform.io/kind": "service", "platform.io/owner": "alice", "platform.io/course": "cs101", "platform.io/problem": "hw1"}},
 		},
 		volumes: []DiscoveryVolume{
-			{Name: "svc-orphan-1", Driver: "local", Labels: map[string]string{"platform.io/kind": "service", "platform.io/owner": "bob"}},
+			{Name: "svc-orphan-1", Driver: "local", Labels: map[string]string{"platform.io/kind": "service", "platform.io/owner": "bob", "platform.io/course": "cs102", "platform.io/problem": "hw2"}},
 		},
 		networks: []DiscoveryNetwork{
-			{ID: "n1", Name: "svc-orphan-net", Driver: "bridge", Labels: map[string]string{"platform.io/kind": "service", "platform.io/owner": "bob"}},
+			{ID: "n1", Name: "svc-orphan-net", Driver: "bridge", Labels: map[string]string{"platform.io/kind": "service", "platform.io/owner": "bob", "platform.io/course": "cs102", "platform.io/problem": "hw2"}},
 		},
 	}
 	result, err := ReattachLeases(s, d)
@@ -794,10 +794,10 @@ func TestReattachCleanupError(t *testing.T) {
 	s := NewSerializedStore()
 	d := &fakeDiscovery{
 		containers: []DiscoveryContainer{
-			{ID: "c1", Name: "svc-alice", Host: "h", Port: 22, Labels: map[string]string{"platform.io/kind": "service", "platform.io/owner": "alice"}},
+			{ID: "c1", Name: "svc-alice", Host: "h", Port: 22, Labels: map[string]string{"platform.io/kind": "service", "platform.io/owner": "alice", "platform.io/course": "cs101", "platform.io/problem": "hw1"}},
 		},
 		volumes: []DiscoveryVolume{
-			{Name: "svc-orphan-1", Driver: "local", Labels: map[string]string{"platform.io/kind": "service", "platform.io/owner": "bob"}},
+			{Name: "svc-orphan-1", Driver: "local", Labels: map[string]string{"platform.io/kind": "service", "platform.io/owner": "bob", "platform.io/course": "cs102", "platform.io/problem": "hw2"}},
 		},
 		removeVolErr: fmt.Errorf("volume busy"),
 	}
