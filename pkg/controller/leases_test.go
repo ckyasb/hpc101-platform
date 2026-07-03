@@ -427,8 +427,9 @@ func TestReleaseCallsDrainerBeforeStop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReleaseLeaseIf: %v", err)
 	}
-	if len(o.events) < 2 || o.events[0] != "drain:student-42" || o.events[1] != "stop:ctr-abc" {
-		t.Errorf("expected [drain:student-42, stop:ctr-abc], got %v", o.events)
+	expected := []string{"drain:student-42", "stop:ctr-abc"}
+	if len(o.events) != len(expected) || o.events[0] != expected[0] || o.events[1] != expected[1] {
+		t.Errorf("expected %v, got %v", expected, o.events)
 	}
 }
 
@@ -501,6 +502,28 @@ func TestMaxLifeTriggerRelease(t *testing.T) {
 	}
 }
 
+func TestIdleTriggerRelease(t *testing.T) {
+	s := NewSerializedStore()
+	l := lease.NewLease("student-42", "ctr-abc", "svc-student-42", "10.0.0.5", 2222, 8*time.Hour, 1*time.Nanosecond)
+	time.Sleep(time.Millisecond)
+	s.UpsertLease(l)
+	rt := &fakeRuntime{}
+
+	err := s.ReleaseLeaseIf("student-42", lease.TriggerIdle,
+		func(l *Lease) bool { return l.IsIdle() },
+		rt, nil)
+	if err != nil {
+		t.Fatalf("idle release: %v", err)
+	}
+	final, _ := s.LookupByPrincipal("student-42")
+	if final == nil || final.State != lease.StateReclaimed {
+		t.Errorf("state: %v", final)
+	}
+	if final.ReleasedBy != lease.TriggerIdle {
+		t.Errorf("ReleasedBy: %s", final.ReleasedBy)
+	}
+}
+
 func TestReleaseServiceDown(t *testing.T) {
 	store := NewSerializedStore()
 	l := lease.NewLease("student-42", "ctr-abc", "svc-student-42", "10.0.0.5", 2222, 8*time.Hour, 30*time.Minute)
@@ -515,5 +538,36 @@ func TestReleaseServiceDown(t *testing.T) {
 	final, _ := store.LookupByPrincipal("student-42")
 	if final == nil || final.State != lease.StateActive {
 		t.Errorf("lease should remain Active after failed stop, got %v", final)
+	}
+}
+
+
+type fakeDiscovery struct {
+	containers []DiscoveryContainer
+}
+
+func (f *fakeDiscovery) ListContainers(labels map[string]string) ([]DiscoveryContainer, error) {
+	return f.containers, nil
+}
+
+func TestReattachLeases(t *testing.T) {
+	s := NewSerializedStore()
+	d := &fakeDiscovery{containers: []DiscoveryContainer{
+		{ID: "ctr-1", Name: "svc-alice", Host: "10.0.0.5", Port: 2222,
+			Labels: map[string]string{"platform.io/kind": "service", "platform.io/owner": "alice"}},
+		{ID: "ctr-2", Name: "orphan", Host: "10.0.0.6", Port: 2222,
+			Labels: map[string]string{"platform.io/kind": "service"}}, // no owner
+	}}
+
+	result := ReattachLeases(s, d)
+	if result.Reattached != 1 {
+		t.Errorf("reattached: %d", result.Reattached)
+	}
+	if result.Orphaned != 1 {
+		t.Errorf("orphaned: %d", result.Orphaned)
+	}
+	l, _ := s.LookupByPrincipal("alice")
+	if l == nil || l.ContainerID != "ctr-1" {
+		t.Errorf("lease not reattached: %v", l)
 	}
 }
