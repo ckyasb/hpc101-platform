@@ -235,6 +235,12 @@ spec:
           podSelector:
             matchLabels:
               app: csoj
+        - namespaceSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: hpc101-platform
+          podSelector:
+            matchLabels:
+              app: controller
       ports:
         - port: 2375
           protocol: TCP

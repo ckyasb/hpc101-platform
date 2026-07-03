@@ -24,7 +24,10 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"strings"
+
+	"github.com/gorilla/websocket"
 )
 
 // Client is the adapter's high-level interface to CSOJ.
@@ -53,16 +56,30 @@ type csjResponse struct {
 	Data    json.RawMessage `json:"data,omitempty"`
 }
 
+// CSOJSONNumber handles CSOJ scores that may be encoded as int or float64.
+type CSOJSONNumber float64
+
+func (n *CSOJSONNumber) UnmarshalJSON(b []byte) error {
+	var f float64
+	if err := json.Unmarshal(b, &f); err != nil {
+		return err
+	}
+	*n = CSOJSONNumber(f)
+	return nil
+}
+
 // Submission represents a CSOJ submission record.
+// Info uses json.RawMessage because CSOJ returns models.JSONMap
+// (map[string]interface{}) which may be a JSON object or string.
 type Submission struct {
-	ID          string      `json:"id"`
-	ProblemID   string      `json:"problem_id"`
-	UserID      string      `json:"user_id"`
-	Status      string      `json:"status"` // Queued, Running, Success, Failed
-	Score       float64     `json:"score"`
-	Performance float64     `json:"performance"`
-	Info        string      `json:"info"`
-	Containers  []Container `json:"containers,omitempty"`
+	ID          string          `json:"id"`
+	ProblemID   string          `json:"problem_id"`
+	UserID      string          `json:"user_id"`
+	Status      string          `json:"status"` // Queued, Running, Success, Failed
+	Score       CSOJSONNumber   `json:"score"`
+	Performance CSOJSONNumber   `json:"performance"`
+	Info        json.RawMessage `json:"info"`
+	Containers  []Container     `json:"containers,omitempty"`
 }
 
 // Container represents a CSOJ judging container.
@@ -75,10 +92,10 @@ type Container struct {
 
 // Result is the extracted judging result.
 type Result struct {
-	Score       float64 `json:"score"`
-	Performance float64 `json:"performance"`
-	Info        string  `json:"info"`
-	Status      string  `json:"status"`
+	Score       float64         `json:"score"`
+	Performance float64         `json:"performance"`
+	Info        json.RawMessage `json:"info"`
+	Status      string          `json:"status"`
 }
 
 // SubmitRequest carries the submission payload.
@@ -198,9 +215,50 @@ func (c *Client) QueryResult(ctx context.Context, submissionID string) (*Submiss
 }
 
 // StreamLogs opens a WebSocket connection to stream judge container logs.
-// URL: WS <base>/ws/submissions/:subID/containers/:conID/logs?token=<jwt>
+// CSOJ's WS endpoint: /ws/submissions/:subID/containers/:conID/logs?token=<jwt>
+// Emits NDJSON frames: {"stream":"stdout","data":"..."} or {"stream":"stderr","data":"..."}
+// callback receives each parsed frame's stream name and data.
 func (c *Client) StreamLogs(ctx context.Context, submissionID, containerID string, callback func(stream, data string) error) error {
-	return fmt.Errorf("adapter: StreamLogs not yet implemented")
+	// Build WS URL from base HTTP URL
+	wsURL := c.baseURL
+	wsURL = strings.Replace(wsURL, "http://", "ws://", 1)
+	wsURL = strings.Replace(wsURL, "https://", "wss://", 1)
+	wsURL = fmt.Sprintf("%s/ws/submissions/%s/containers/%s/logs?token=%s",
+		wsURL, url.PathEscape(submissionID), url.PathEscape(containerID), url.QueryEscape(c.credential))
+
+	conn, _, err := websocket.DefaultDialer.DialContext(ctx, wsURL, nil)
+	if err != nil {
+		return fmt.Errorf("adapter: websocket dial: %w", err)
+	}
+	defer conn.Close()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		_, message, err := conn.ReadMessage()
+		if err != nil {
+			if websocket.IsCloseError(err, websocket.CloseNormalClosure) {
+				return nil
+			}
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return fmt.Errorf("adapter: websocket read: %w", err)
+		}
+		var frame struct {
+			Stream string `json:"stream"`
+			Data   string `json:"data"`
+		}
+		if err := json.Unmarshal(message, &frame); err != nil {
+			continue // skip non-NDJSON frames
+		}
+		if err := callback(frame.Stream, frame.Data); err != nil {
+			return err
+		}
+	}
 }
 
 // SyncProblem ensures the platform problem has a corresponding CSOJ

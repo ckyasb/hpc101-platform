@@ -1,0 +1,93 @@
+# Platform Controller Deployment for hpc101-platform
+# Serves the lease lookup API consumed by the bastion's
+# AuthorizedPrincipalsCommand (/api/v1/leases?principal=).
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hpc101-platform
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    app.kubernetes.io/part-of: hpc101-platform
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: controller
+  namespace: hpc101-platform
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: controller
+  namespace: hpc101-platform
+  labels:
+    app: controller
+    app.kubernetes.io/part-of: hpc101-platform
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+      protocol: TCP
+  selector:
+    app: controller
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: controller
+  namespace: hpc101-platform
+  labels:
+    app: controller
+    app.kubernetes.io/part-of: hpc101-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: controller
+  template:
+    metadata:
+      labels:
+        app: controller
+        app.kubernetes.io/part-of: hpc101-platform
+    spec:
+      serviceAccountName: controller
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: controller
+          image: hpc101-platform/controller:latest
+          ports:
+            - containerPort: 8080
+              name: http
+              protocol: TCP
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+            runAsNonRoot: true
+            runAsUser: 1000
+            readOnlyRootFilesystem: true
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+          readinessProbe:
+            httpGet:
+              path: /api/v1/leases
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/v1/leases
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 20

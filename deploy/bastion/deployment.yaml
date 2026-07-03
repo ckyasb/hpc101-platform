@@ -79,7 +79,7 @@ spec:
             - |
               cp /secret/ssh_host_ed25519_key /keys/ssh_host_ed25519_key
               chmod 0600 /keys/ssh_host_ed25519_key
-              chown 1000:1000 /keys/ssh_host_ed25519_key
+              # No chown: init runs as UID 1000 so files are 1000-owned
           volumeMounts:
             - name: ssh-host-key-secret
               mountPath: /secret
