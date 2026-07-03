@@ -149,11 +149,11 @@ func (fs *FileStore) GetKey(principal string) (string, error) {
 
 // --- Problem mapping ---
 
-func (fs *FileStore) MapProblem(course, contest, platformID, csojID string) {
+func (fs *FileStore) MapProblem(course, contest, platformID, csojID string) error {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 	fs.data.ProblemMap[course+":"+contest+":"+platformID] = csojID
-	_ = fs.unsafeSaveLocked()
+	return fs.unsafeSaveLocked()
 }
 
 func (fs *FileStore) ResolveProblem(course, contest, platformID string) string {

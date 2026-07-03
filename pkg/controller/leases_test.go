@@ -202,7 +202,9 @@ func TestSubmitHandlerSuccess(t *testing.T) {
 	f := &fakeSubmission{}
 	s := NewSerializedStore()
 	// Pre-populate problem mapping so submit resolves correctly.
-	s.MapProblem("cs101", "c1", "p1", "cs101--p1")
+	if err := s.MapProblem("cs101", "c1", "p1", "cs101--p1"); err != nil {
+		t.Fatal(err)
+	}
 	h := NewHandler(s, nil, f)
 	body := `{"problem_id":"p1","files":{"main.c":"aW50IG1haW4oKXt9"}}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/submissions?course=cs101&contest=c1", strings.NewReader(body))
@@ -232,7 +234,9 @@ func TestSubmitHandlerSuccess(t *testing.T) {
 
 func TestSubmitHandlerMissingService(t *testing.T) {
 	s := NewSerializedStore()
-	s.MapProblem("cs101", "c1", "p1", "cs101--p1")
+	if err := s.MapProblem("cs101", "c1", "p1", "cs101--p1"); err != nil {
+		t.Fatal(err)
+	}
 	h := NewHandler(s, nil, nil)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/submissions?course=cs101&contest=c1", strings.NewReader(`{"problem_id":"p1","files":{"a":"b"}}`))
 	rec := httptest.NewRecorder()
@@ -244,7 +248,9 @@ func TestSubmitHandlerMissingService(t *testing.T) {
 
 func TestSubmitHandlerEmptyInputs(t *testing.T) {
 	s := NewSerializedStore()
-	s.MapProblem("cs101", "c1", "p1", "cs101--p1")
+	if err := s.MapProblem("cs101", "c1", "p1", "cs101--p1"); err != nil {
+		t.Fatal(err)
+	}
 	h := NewHandler(s, nil, &fakeSubmission{})
 	for _, body := range []string{`{"problem_id":"","files":{"a":"b"}}`, `{"problem_id":"p1","files":{}}`} {
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/submissions?course=cs101&contest=c1", strings.NewReader(body))
@@ -260,7 +266,9 @@ func TestSubmitHandlerEmptyInputs(t *testing.T) {
 func TestSubmitHandlerServiceError(t *testing.T) {
 	f := &fakeSubmission{err: fmt.Errorf("CSOJ unavailable")}
 	s := NewSerializedStore()
-	s.MapProblem("cs101", "c1", "p1", "cs101--p1")
+	if err := s.MapProblem("cs101", "c1", "p1", "cs101--p1"); err != nil {
+		t.Fatal(err)
+	}
 	h := NewHandler(s, nil, f)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/submissions?course=cs101&contest=c1", strings.NewReader(`{"problem_id":"p1","files":{"a":"YQ=="}}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -273,7 +281,9 @@ func TestSubmitHandlerServiceError(t *testing.T) {
 
 func TestSubmitHandlerMalformedJSON(t *testing.T) {
 	s := NewSerializedStore()
-	s.MapProblem("cs101", "c1", "p1", "cs101--p1")
+	if err := s.MapProblem("cs101", "c1", "p1", "cs101--p1"); err != nil {
+		t.Fatal(err)
+	}
 	h := NewHandler(s, nil, &fakeSubmission{})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/submissions?course=cs101&contest=c1", strings.NewReader(`not json`))
 	rec := httptest.NewRecorder()
@@ -285,7 +295,9 @@ func TestSubmitHandlerMalformedJSON(t *testing.T) {
 
 func TestSubmitHandlerBadBase64(t *testing.T) {
 	s := NewSerializedStore()
-	s.MapProblem("cs101", "c1", "p1", "cs101--p1")
+	if err := s.MapProblem("cs101", "c1", "p1", "cs101--p1"); err != nil {
+		t.Fatal(err)
+	}
 	h := NewHandler(s, nil, &fakeSubmission{})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/submissions?course=cs101&contest=c1", strings.NewReader(`{"problem_id":"p1","files":{"a":"!!!"}}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -298,7 +310,9 @@ func TestSubmitHandlerBadBase64(t *testing.T) {
 
 func TestSubmitHandlerEmptyFileName(t *testing.T) {
 	s := NewSerializedStore()
-	s.MapProblem("cs101", "c1", "p1", "cs101--p1")
+	if err := s.MapProblem("cs101", "c1", "p1", "cs101--p1"); err != nil {
+		t.Fatal(err)
+	}
 	h := NewHandler(s, nil, &fakeSubmission{})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/submissions?course=cs101&contest=c1", strings.NewReader(`{"problem_id":"p1","files":{"":"YQ=="}}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -311,7 +325,9 @@ func TestSubmitHandlerEmptyFileName(t *testing.T) {
 
 func TestSubmitHandlerWhitespaceProblemID(t *testing.T) {
 	s := NewSerializedStore()
-	s.MapProblem("cs101", "c1", "p1", "cs101--p1")
+	if err := s.MapProblem("cs101", "c1", "p1", "cs101--p1"); err != nil {
+		t.Fatal(err)
+	}
 	h := NewHandler(s, nil, &fakeSubmission{})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/submissions?course=cs101&contest=c1", strings.NewReader(`{"problem_id":"   ","files":{"a":"YQ=="}}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -324,7 +340,9 @@ func TestSubmitHandlerWhitespaceProblemID(t *testing.T) {
 
 func TestSubmitHandlerMethodRejection(t *testing.T) {
 	s := NewSerializedStore()
-	s.MapProblem("cs101", "c1", "p1", "cs101--p1")
+	if err := s.MapProblem("cs101", "c1", "p1", "cs101--p1"); err != nil {
+		t.Fatal(err)
+	}
 	h := NewHandler(s, nil, &fakeSubmission{})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/submissions?course=cs101&contest=c1", nil)
 	rec := httptest.NewRecorder()
@@ -1004,9 +1022,9 @@ func TestProblemSyncNoMappingStore(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusInternalServerError {
 		t.Errorf("expected 500 for missing mapper, got %d", rec.Code)
-		if fs.lastProblem != "" {
-			t.Fatalf("adapter was called despite missing mapper: lastProblem=%s", fs.lastProblem)
-		}
+	}
+	if fs.lastProblem != "" {
+		t.Fatalf("adapter was called despite missing mapper: lastProblem=%s", fs.lastProblem)
 	}
 }
 
@@ -1125,5 +1143,50 @@ func TestFileStoreRestart(t *testing.T) {
 	// Verify problem mapping survived.
 	if mid := fs2.ResolveProblem("cs101", "c1", "p1"); mid != "c1--p1" {
 		t.Errorf("problem mapping: got %q", mid)
+	}
+}
+
+// Round 15: Handler restart test — proves keys survive store reopen
+
+func TestHandlerRestartPreservesKey(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := tmpDir + "/state.json"
+
+	// Phase 1: Register a key with handler using FileStore.
+	fs1, err := NewFileStore(path)
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+	h1 := NewHandler(fs1, nil, nil)
+	body1 := `{"principal":"alice","public_key":"ssh-rsa AAA..."}`
+	req1 := httptest.NewRequest(http.MethodPost, "/api/v1/keys", strings.NewReader(body1))
+	req1.Header.Set("Content-Type", "application/json")
+	rec1 := httptest.NewRecorder()
+	h1.ServeHTTP(rec1, req1)
+	if rec1.Code != http.StatusCreated {
+		t.Fatalf("register key: %d: %s", rec1.Code, rec1.Body.String())
+	}
+
+	// Phase 2: Simulate restart — load a new FileStore from same path.
+	fs2, err := NewFileStore(path)
+	if err != nil {
+		t.Fatalf("NewFileStore (restart): %v", err)
+	}
+	// Verify key survived by reading directly.
+	key, err := fs2.GetKey("alice")
+	if err != nil {
+		t.Fatalf("GetKey after restart: %v", err)
+	}
+	if key != "ssh-rsa AAA..." {
+		t.Errorf("key mismatch: %s", key)
+	}
+
+	// Phase 3: New handler with restarted store should see the key.
+	h2 := NewHandler(fs2, nil, nil)
+	req2 := httptest.NewRequest(http.MethodGet, "/api/v1/keys?principal=alice", nil)
+	rec2 := httptest.NewRecorder()
+	h2.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("get key after restart: %d: %s", rec2.Code, rec2.Body.String())
 	}
 }

@@ -393,7 +393,7 @@ func (h *Handler) handleProblemSync(w http.ResponseWriter, r *http.Request) {
 
 	// Require a mapping-capable store before calling the adapter.
 	mapper, hasMapper := h.store.(interface {
-		MapProblem(string, string, string, string)
+		MapProblem(string, string, string, string) error
 	})
 	if !hasMapper {
 		http.Error(w, `{"error":"store does not support problem mapping"}`, http.StatusInternalServerError)

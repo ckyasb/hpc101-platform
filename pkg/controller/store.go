@@ -157,10 +157,11 @@ func (s *serializedStore) AllSubmissions() []*SubmissionRecord {
 }
 
 // MapProblem stores the CSOJ problem ID for a course+contest+platform problem.
-func (s *serializedStore) MapProblem(course, contest, platformID, csojID string) {
+func (s *serializedStore) MapProblem(course, contest, platformID, csojID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.problemMap[course+":"+contest+":"+platformID] = csojID
+	return nil
 }
 
 // ResolveProblem returns the mapped CSOJ problem ID, or empty if not found.
