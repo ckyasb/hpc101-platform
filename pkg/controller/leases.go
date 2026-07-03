@@ -139,6 +139,14 @@ type KeyStore interface {
 	GetKey(principal string) (string, error)
 }
 
+// idempotencyEntry tracks an in-flight or completed submission for dedup.
+type idempotencyEntry struct {
+	payloadHash  string
+	submissionID string // empty while in-flight
+	done         chan struct{}
+	err          error
+}
+
 // Handler serves the controller HTTP API.
 type Handler struct {
 	mu          sync.Mutex
@@ -150,7 +158,7 @@ type Handler struct {
 	keyStore    KeyStore
 	problemSync ProblemSyncService
 	submissions map[string]*SubmissionRecord // submissionID → record
-	idempotency map[string]string            // scopeKey → submissionID
+	idempotency map[string]*idempotencyEntry // scopeKey → entry
 	mux         *http.ServeMux
 }
 
@@ -199,7 +207,7 @@ func newHandler(store LeaseStore, runtime ContainerCreator, submission Submissio
 		keyStore:    ks,
 		problemSync: sync,
 		submissions: make(map[string]*SubmissionRecord),
-		idempotency: make(map[string]string),
+		idempotency: make(map[string]*idempotencyEntry),
 		mux:         http.NewServeMux(),
 	}
 	h.mux.HandleFunc("/api/v1/leases", h.handleLeases)
@@ -672,58 +680,92 @@ func (h *Handler) handleSubmissions(w http.ResponseWriter, r *http.Request) {
 	payloadHash := computePayloadHash(files)
 
 	h.mu.Lock()
-	existingSubID, scopeExists := h.idempotency[scopeKey]
+	existing, scopeExists := h.idempotency[scopeKey]
 	h.mu.Unlock()
 
 	if scopeExists {
-		// An existing submission for this scope exists.
-		h.mu.Lock()
-		existingRec, recExists := h.submissions[existingSubID]
-		h.mu.Unlock()
-		if recExists && existingRec.IdempotencyKey == payloadHash {
-			// Exact duplicate: same files, same scope → return existing.
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode(map[string]string{
-				"submission_id": existingRec.ID,
-				"status":        "duplicate",
-			})
+		if existing.submissionID != "" {
+			// Completed entry: check if exact duplicate or incompatible.
+			h.mu.Lock()
+			rec, _ := h.submissions[existing.submissionID]
+			h.mu.Unlock()
+			if rec != nil && rec.IdempotencyKey == payloadHash {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				json.NewEncoder(w).Encode(map[string]string{
+					"submission_id": rec.ID,
+					"status":        "duplicate",
+				})
+				return
+			}
+			// Incompatible: same scope, different payload → 409.
+			http.Error(w, `{"error":"incompatible duplicate submission for this principal/problem; content differs from existing"}`, http.StatusConflict)
 			return
 		}
-		// Incompatible duplicate: same scope, different payload → 409.
-		http.Error(w, `{"error":"incompatible duplicate submission for this principal/problem; content differs from existing"}`, http.StatusConflict)
+		// In-flight entry: wait for completion.
+		if existing.payloadHash == payloadHash {
+			// Same payload — wait for the in-flight submit to complete.
+			select {
+			case <-existing.done:
+				if existing.err != nil {
+					// Original submit failed; clear and allow retry.
+					h.mu.Lock()
+					delete(h.idempotency, scopeKey)
+					h.mu.Unlock()
+					http.Error(w, fmt.Sprintf(`{"error":"previous in-flight submit failed: %s"}`, existing.err.Error()), http.StatusInternalServerError)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				json.NewEncoder(w).Encode(map[string]string{
+					"submission_id": existing.submissionID,
+					"status":        "duplicate",
+				})
+				return
+			case <-r.Context().Done():
+				http.Error(w, `{"error":"request cancelled while waiting for in-flight submit"}`, http.StatusServiceUnavailable)
+				return
+			}
+		}
+		// Different payload while in-flight → 409.
+		http.Error(w, `{"error":"incompatible duplicate submission for this principal/problem; content differs from in-flight"}`, http.StatusConflict)
 		return
 	}
 
 	// Reserve the idempotency scope under lock before calling CSOJ.
-	// This prevents concurrent identical submits from both calling CSOJ.
+	entry := &idempotencyEntry{
+		payloadHash: payloadHash,
+		done:        make(chan struct{}),
+	}
 	h.mu.Lock()
-	// Double-check after acquiring lock (another goroutine may have reserved).
-	if existingSubID2, ok := h.idempotency[scopeKey]; ok {
-		h.mu.Unlock()
-		existingRec2, _ := h.submissions[existingSubID2]
-		if existingRec2 != nil && existingRec2.IdempotencyKey == payloadHash {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode(map[string]string{
-				"submission_id": existingRec2.ID,
-				"status":        "duplicate",
-			})
-			return
+	// Double-check after acquiring lock.
+	if existing2, ok := h.idempotency[scopeKey]; ok {
+		if existing2.submissionID != "" {
+			rec2, _ := h.submissions[existing2.submissionID]
+			if rec2 != nil && rec2.IdempotencyKey == payloadHash {
+				h.mu.Unlock()
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				json.NewEncoder(w).Encode(map[string]string{"submission_id": rec2.ID, "status": "duplicate"})
+				return
+			}
 		}
-		http.Error(w, `{"error":"incompatible duplicate submission for this principal/problem; content differs from existing"}`, http.StatusConflict)
+		h.mu.Unlock()
+		http.Error(w, `{"error":"incompatible duplicate submission for this principal/problem"}`, http.StatusConflict)
 		return
 	}
-	// Reserve with a placeholder to block concurrent submits.
-	h.idempotency[scopeKey] = "__pending__"
+	h.idempotency[scopeKey] = entry
 	h.mu.Unlock()
 
+	// Call CSOJ Submit WITHOUT holding the store lock.
 	id, err := h.submission.Submit(r.Context(), mappedID, files)
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	if err != nil {
 		// Clear the reservation so a retry can proceed.
-		h.mu.Lock()
+		entry.err = err
+		close(entry.done)
 		delete(h.idempotency, scopeKey)
-		h.mu.Unlock()
 		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
 		return
 	}
@@ -739,13 +781,15 @@ func (h *Handler) handleSubmissions(w http.ResponseWriter, r *http.Request) {
 		Submitted:      time.Now().UTC().Format(time.RFC3339),
 		IdempotencyKey: payloadHash,
 	}
-	h.mu.Lock()
 	h.submissions[id] = rec
-	h.idempotency[scopeKey] = id // replace placeholder with real ID
-	h.mu.Unlock()
+	entry.submissionID = id
+	close(entry.done)
 	// Persist in store if available.
 	if s, ok := h.store.(interface{ SaveSubmission(*SubmissionRecord) error }); ok {
-		_ = s.SaveSubmission(rec)
+		if saveErr := s.SaveSubmission(rec); saveErr != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"save submission: %s"}`, saveErr.Error()), http.StatusInternalServerError)
+			return
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
