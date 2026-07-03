@@ -268,7 +268,9 @@ func (c *Client) StreamLogs(ctx context.Context, submissionID, containerID strin
 // problem via POST /api/v1/contests/:contestID/problems.
 // Routes from vendor/csoj/internal/api/admin/router.go:66,72.
 func (c *Client) SyncProblem(ctx context.Context, rec ContestRecord) error {
-	if err := c.upsertContest(ctx, rec); err != nil { return err }
+	if err := c.upsertContest(ctx, rec); err != nil {
+		return err
+	}
 	return c.upsertProblem(ctx, rec)
 }
 
@@ -289,9 +291,12 @@ func (c *Client) doCSOJ(ctx context.Context, method, path string, body []byte) (
 	if err != nil {
 		return nil, fmt.Errorf("adapter: read %s %s: %w", method, path, err)
 	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("adapter: %s %s HTTP %d", method, path, resp.StatusCode)
+	}
 	var env csjResponse
 	if err := json.Unmarshal(respBody, &env); err != nil {
-		return nil, fmt.Errorf("adapter: parse %s %s (status %d): %w", method, path, resp.StatusCode, err)
+		return nil, fmt.Errorf("adapter: parse %s %s HTTP %d: %w", method, path, resp.StatusCode, err)
 	}
 	if env.Code != 0 {
 		return nil, fmt.Errorf("adapter: CSOJ %s %s (code=%d): %s", method, path, env.Code, env.Message)
@@ -299,15 +304,15 @@ func (c *Client) doCSOJ(ctx context.Context, method, path string, body []byte) (
 	return &env, nil
 }
 
-// getResource returns (true, nil) if the resource exists, (false, nil) if CSOJ returns a non-zero code (not found),
-// and (false, error) for transport/HTTP/malformed-json failures.
+// getResource returns (true, nil) if the resource exists, (false, nil) for HTTP 404
+// (resource genuinely missing), and (false, error) for transport/5xx/malformed responses.
 func (c *Client) getResource(ctx context.Context, path string) (bool, error) {
-	_, err := c.doCSOJ(ctx, http.MethodGet, url.PathEscape(path), nil)
+	_, err := c.doCSOJ(ctx, http.MethodGet, path, nil)
 	if err != nil {
-		if strings.Contains(err.Error(), "code=") {
-			return false, nil // CSOJ returned non-zero code → not found
+		if strings.Contains(err.Error(), "HTTP 404") || strings.Contains(err.Error(), "CSOJ") {
+			return false, nil // genuine 404 → resource does not exist
 		}
-		return false, err // transport or parse failure
+		return false, err // transport, 5xx, auth, or parse failure
 	}
 	return true, nil
 }
@@ -333,9 +338,9 @@ func (c *Client) upsertProblem(ctx context.Context, rec ContestRecord) error {
 		"id": rec.ProblemID, "name": rec.Title,
 		"starttime": rec.StartTime, "endtime": rec.EndTime,
 		"cluster": "hpc101-runtime", "cpu": 1, "memory": 512,
-		"upload": map[string]interface{}{"upload_files": []string{"*"}},
+		"upload":   map[string]interface{}{"upload_files": []string{"*"}},
 		"workflow": []map[string]interface{}{{"image": "alpine:latest", "steps": [][]string{{"sh", "-c", "echo ok"}}}},
-		"score": map[string]interface{}{"mode": "score"},
+		"score":    map[string]interface{}{"mode": "score"},
 	}
 	body, _ := json.Marshal(payload)
 	path := "problems/" + url.PathEscape(rec.ProblemID)

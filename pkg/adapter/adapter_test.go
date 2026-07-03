@@ -200,12 +200,14 @@ func TestSyncProblemCreate(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls = append(calls, r.Method+" "+r.URL.Path)
 		code := 1 // not found for GET
-		if r.Method != http.MethodGet { code = 0 } // success for POST/PUT
+		if r.Method != http.MethodGet {
+			code = 0
+		} // success for POST/PUT
 		json.NewEncoder(w).Encode(map[string]interface{}{"code": code})
 	}))
 	defer srv.Close()
 	c := NewClient(srv.URL, "tok")
-	err := c.SyncProblem(context.Background(), ContestRecord{ContestID:"c1",ProblemID:"p1",Title:"T"})
+	err := c.SyncProblem(context.Background(), ContestRecord{ContestID: "c1", ProblemID: "p1", Title: "T"})
 	if err != nil {
 		t.Fatalf("SyncProblem: %v", err)
 	}
@@ -223,7 +225,7 @@ func TestSyncProblemUpdate(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := NewClient(srv.URL, "tok")
-	err := c.SyncProblem(context.Background(), ContestRecord{ContestID:"c1",ProblemID:"p1",Title:"T"})
+	err := c.SyncProblem(context.Background(), ContestRecord{ContestID: "c1", ProblemID: "p1", Title: "T"})
 	if err != nil {
 		t.Fatalf("SyncProblem: %v", err)
 	}
@@ -243,17 +245,28 @@ func TestSyncProblemGETTransportError(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := NewClient(srv.URL, "tok")
-	err := c.SyncProblem(context.Background(), ContestRecord{ContestID:"c1",ProblemID:"p1",Title:"T"})
+	err := c.SyncProblem(context.Background(), ContestRecord{ContestID: "c1", ProblemID: "p1", Title: "T"})
 	if err == nil {
 		t.Fatal("expected error for 500 on GET problem")
 	}
 }
 
+func TestSyncProblem500WithCodeZero(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(500)
+		w.Write([]byte(`{"code":0,"message":"ok"}`))
+	}))
+	defer srv.Close()
+	c := NewClient(srv.URL, "tok")
+	err := c.SyncProblem(context.Background(), ContestRecord{ContestID: "c1", ProblemID: "p1", Title: "T"})
+	if err == nil {
+		t.Fatal("expected error for HTTP 500 even with code:0")
+	}
+}
+
 func TestSyncProblemRejectsError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(400)
-		w.Write([]byte(`{"code":1,"message":"duplicate problem ID"}`))
+		json.NewEncoder(w).Encode(map[string]interface{}{"code": 1, "message": "duplicate problem ID"})
 	}))
 	defer srv.Close()
 
