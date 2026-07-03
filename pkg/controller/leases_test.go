@@ -40,6 +40,7 @@ func (f *fakeRuntime) CreateService(req CreateServiceRequest) (*ServiceResult, e
 	f.lastProblem = req.Problem
 	return &ServiceResult{ContainerID: "ctr-" + req.Principal, Host: "10.0.0.5", Port: 2222}, nil
 }
+func (f *fakeRuntime) StopService(containerID string) error { return nil }
 
 func TestHandleLeasesActive(t *testing.T) {
 	l := lease.NewLease("student-42", "abc", "svc-student-42", "10.0.0.5", 2222, 8*time.Hour, 30*time.Minute)
@@ -293,5 +294,47 @@ func TestSubmitHandlerMethodRejection(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("expected 405, got %d", rec.Code)
+	}
+}
+
+func TestReleaseSuccess(t *testing.T) {
+	l := lease.NewLease("student-42", "ctr-abc", "svc-student-42", "10.0.0.5", 2222, 8*time.Hour, 30*time.Minute)
+	store := memStore{"student-42": l}
+	h := NewHandler(store, &fakeRuntime{}, nil)
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/release?principal=student-42", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if l.State != lease.StateReclaimed {
+		t.Errorf("state: %s", l.State)
+	}
+	if l.ReleasedBy != lease.TriggerManual {
+		t.Errorf("ReleasedBy: %s", l.ReleasedBy)
+	}
+}
+
+type fakeRuntimeFailing struct{}
+
+func (f *fakeRuntimeFailing) CreateService(req CreateServiceRequest) (*ServiceResult, error) {
+	return nil, fmt.Errorf("down")
+}
+func (f *fakeRuntimeFailing) StopService(containerID string) error {
+	return fmt.Errorf("stop failed")
+}
+
+func TestReleaseServiceDown(t *testing.T) {
+	l := lease.NewLease("student-42", "ctr-abc", "svc-student-42", "10.0.0.5", 2222, 8*time.Hour, 30*time.Minute)
+	store := memStore{"student-42": l}
+	h := NewHandler(store, &fakeRuntimeFailing{}, nil)
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/release?principal=student-42", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500, got %d", rec.Code)
+	}
+	if l.State == lease.StateReclaimed {
+		t.Error("lease should not be Reclaimed after failed release")
 	}
 }

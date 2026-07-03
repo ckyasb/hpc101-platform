@@ -57,3 +57,7 @@ func (a *runtimeAdapter) CreateService(req controller.CreateServiceRequest) (*co
 		Port:        res.Port,
 	}, nil
 }
+
+func (a *runtimeAdapter) StopService(containerID string) error {
+	return a.client.StopAndRemoveContainer(context.Background(), containerID)
+}

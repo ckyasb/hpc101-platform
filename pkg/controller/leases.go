@@ -44,9 +44,10 @@ type ServiceResult struct {
 	Port        uint16
 }
 
-// ContainerCreator is the interface for creating service containers.
+// ContainerCreator is the interface for creating and destroying service containers.
 type ContainerCreator interface {
 	CreateService(req CreateServiceRequest) (*ServiceResult, error)
+	StopService(containerID string) error
 }
 
 // SubmissionService is the interface for submitting solutions for judging.
@@ -197,10 +198,10 @@ func (h *Handler) handleRelease(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"release failed"}`, http.StatusConflict)
 		return
 	}
-	runtime := h.runtime
+	rt := h.runtime
 	if err := l.ExecuteRelease(func(s lease.ReleaseState) error {
-		if s == lease.StateDraining && runtime != nil {
-			runtime.CreateService(CreateServiceRequest{}) // placeholder — real drains bastion channels
+		if s == lease.StateDraining && rt != nil {
+			return rt.StopService(l.ContainerID)
 		}
 		return nil
 	}); err != nil {
