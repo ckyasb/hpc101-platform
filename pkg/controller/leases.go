@@ -12,10 +12,13 @@ import (
 	"hpc101-platform/lease"
 )
 
+// Lease type alias for callers importing this package.
+type Lease = lease.Lease
+
 // LeaseStore is the interface for lease storage — implemented by
 // the full lease repository (task11).
 type LeaseStore interface {
-	LookupByPrincipal(principal string) (*lease.Lease, error)
+	LookupByPrincipal(principal string) (*Lease, error)
 }
 
 // Handler serves the controller HTTP API.
@@ -28,6 +31,10 @@ type Handler struct {
 func NewHandler(store LeaseStore) *Handler {
 	h := &Handler{store: store, mux: http.NewServeMux()}
 	h.mux.HandleFunc("/api/v1/leases", h.handleLeases)
+	h.mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
+	})
 	return h
 }
 

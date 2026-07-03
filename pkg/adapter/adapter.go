@@ -232,12 +232,13 @@ func (c *Client) StreamLogs(ctx context.Context, submissionID, containerID strin
 	}
 	defer conn.Close()
 
+	// Close connection when context is cancelled
+	go func() {
+		<-ctx.Done()
+		conn.Close()
+	}()
+
 	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
 		_, message, err := conn.ReadMessage()
 		if err != nil {
 			if websocket.IsCloseError(err, websocket.CloseNormalClosure) {
@@ -262,7 +263,46 @@ func (c *Client) StreamLogs(ctx context.Context, submissionID, containerID strin
 }
 
 // SyncProblem ensures the platform problem has a corresponding CSOJ
-// contest/problem record. Uses CSOJ's admin API.
+// contest/problem record via CSOJ's admin API.
+// POST /api/v1/admin/problems with contest/problem metadata.
 func (c *Client) SyncProblem(ctx context.Context, rec ContestRecord) error {
-	return fmt.Errorf("adapter: SyncProblem not yet implemented")
+	payload := map[string]interface{}{
+		"contest_id":  rec.ContestID,
+		"problem_id":  rec.ProblemID,
+		"title":       rec.Title,
+		"start_time":  rec.StartTime,
+		"end_time":    rec.EndTime,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("adapter: marshal sync payload: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/admin/problems", c.baseURL)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("adapter: new sync request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+c.credential)
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("adapter: sync problem: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("adapter: read sync response: %w", err)
+	}
+
+	var env csjResponse
+	if err := json.Unmarshal(respBody, &env); err != nil {
+		return fmt.Errorf("adapter: parse sync response: %w", err)
+	}
+	if env.Code != 0 {
+		return fmt.Errorf("adapter: CSOJ rejected sync (code=%d): %s", env.Code, env.Message)
+	}
+	return nil
 }

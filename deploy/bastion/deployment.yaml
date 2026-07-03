@@ -70,6 +70,7 @@ spec:
       securityContext:
         seccompProfile:
           type: RuntimeDefault
+        fsGroup: 1000
       initContainers:
         - name: prepare-host-key
           image: busybox:1.36
@@ -160,7 +161,7 @@ spec:
         - name: ssh-host-key-secret
           secret:
             secretName: bastion-host-key
-            defaultMode: 0400
+            defaultMode: 0440
             items:
               - key: ssh_host_ed25519_key
                 path: ssh_host_ed25519_key

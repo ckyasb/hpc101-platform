@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -194,10 +195,88 @@ func TestStreamLogsWebSocket(t *testing.T) {
 	}
 }
 
-func TestSyncProblemNotImplemented(t *testing.T) {
-	client := NewClient("http://localhost", "x")
-	err := client.SyncProblem(context.Background(), ContestRecord{})
+func TestSyncProblemHTTP(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("expected POST, got %s", r.Method)
+		}
+		if r.Header.Get("Authorization") != "Bearer admin-token" {
+			t.Errorf("missing bearer token")
+		}
+		if !strings.Contains(r.URL.Path, "/admin/problems") {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"code": 0, "message": "ok"})
+	}))
+	defer srv.Close()
+
+	client := NewClient(srv.URL, "admin-token")
+	err := client.SyncProblem(context.Background(), ContestRecord{
+		ContestID: "c1", ProblemID: "p1", Title: "Test Problem",
+	})
+	if err != nil {
+		t.Fatalf("SyncProblem: %v", err)
+	}
+}
+
+func TestSyncProblemRejectsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(400)
+		w.Write([]byte(`{"code":1,"message":"duplicate problem ID"}`))
+	}))
+	defer srv.Close()
+
+	client := NewClient(srv.URL, "x")
+	err := client.SyncProblem(context.Background(), ContestRecord{ContestID: "c1", ProblemID: "dup"})
 	if err == nil {
-		t.Fatal("expected 'not implemented' error")
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "duplicate problem ID") {
+		t.Errorf("error should contain CSOJ message: %v", err)
+	}
+}
+
+func TestStreamLogsContextCancel(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upgrader := websocket.Upgrader{}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("ws upgrade: %v", err)
+		}
+		defer conn.Close()
+		// Send one frame, then idle (test cancels context)
+		conn.WriteMessage(websocket.TextMessage, []byte(`{"stream":"stdout","data":"line1"}`))
+		// Block until test cancellation closes connection
+		_, _, err = conn.ReadMessage()
+		// Expected: read fails due to close
+		_ = err
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var received []string
+	done := make(chan error, 1)
+
+	go func() {
+		client := NewClient("http://"+srv.Listener.Addr().String(), "test-token")
+		done <- client.StreamLogs(ctx, "sub-1", "ctr-1", func(stream, data string) error {
+			received = append(received, stream+":"+data)
+			return nil
+		})
+	}()
+
+	// Wait for first frame to arrive, then cancel
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+
+	err := <-done
+	if err == nil {
+		t.Log("StreamLogs returned nil after cancel (conn closed)")
+	} else if err != context.Canceled {
+		t.Logf("StreamLogs returned: %v (expected context.Canceled or nil)", err)
+	}
+	if len(received) == 0 {
+		t.Error("should have received at least the first frame before cancel")
 	}
 }

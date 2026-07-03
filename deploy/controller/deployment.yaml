@@ -81,13 +81,13 @@ spec:
               memory: "256Mi"
           readinessProbe:
             httpGet:
-              path: /api/v1/leases
+              path: /healthz
               port: 8080
             initialDelaySeconds: 5
             periodSeconds: 10
           livenessProbe:
             httpGet:
-              path: /api/v1/leases
+              path: /healthz
               port: 8080
             initialDelaySeconds: 10
             periodSeconds: 20
