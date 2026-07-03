@@ -5,4 +5,4 @@ data/
 cmd/podman-poc/podman-poc
 controller-main
 cmd/codojo/codojo
-cmd/codojo/codojo
+codojo
