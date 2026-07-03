@@ -336,14 +336,16 @@ func (f *fakeRuntimeFailing) StopService(containerID string) error {
 }
 
 type blockingRuntime struct {
-	stopCh chan struct{}
+	enteredStop chan struct{}
+	releaseStop chan struct{}
 }
 
 func (b *blockingRuntime) CreateService(req CreateServiceRequest) (*ServiceResult, error) {
 	return nil, nil
 }
 func (b *blockingRuntime) StopService(containerID string) error {
-	<-b.stopCh
+	close(b.enteredStop)
+	<-b.releaseStop
 	return nil
 }
 
@@ -352,44 +354,66 @@ func TestReleaseBlocksConcurrentUpsert(t *testing.T) {
 	l := lease.NewLease("student-42", "ctr-abc", "svc-student-42", "10.0.0.5", 2222, 8*time.Hour, 30*time.Minute)
 	s.UpsertLease(l)
 
-	br := &blockingRuntime{stopCh: make(chan struct{})}
+	br := &blockingRuntime{enteredStop: make(chan struct{}), releaseStop: make(chan struct{})}
 	releaseDone := make(chan error, 1)
 	go func() {
 		releaseDone <- s.ReleaseLeaseIf("student-42", lease.TriggerManual, func(l *Lease) bool { return true }, br, nil)
 	}()
 
-	time.Sleep(50 * time.Millisecond)
+	// Wait for release to enter StopService before attempting upsert
+	select {
+	case <-br.enteredStop:
+	case <-time.After(2 * time.Second):
+		t.Fatal("release never entered StopService")
+	}
 
-	newLease := lease.NewLease("student-42", "ctr-def", "svc-student-42", "10.0.0.6", 2222, 8*time.Hour, 30*time.Minute)
+	// Now try to upsert — must block until release completes
 	upsertDone := make(chan struct{})
+	newLease := lease.NewLease("student-42", "ctr-def", "svc-student-42", "10.0.0.6", 2222, 8*time.Hour, 30*time.Minute)
 	go func() {
 		s.UpsertLease(newLease)
 		close(upsertDone)
 	}()
 
+	// Upsert should NOT complete while release holds the lock
 	select {
 	case <-upsertDone:
-		t.Log("upsert completed before release (lock may have been released)")
-	case <-time.After(100 * time.Millisecond):
-		// Expected: upsert blocked by lock
+		t.Fatal("upsert completed while release held the lock — serialization broken")
+	case <-time.After(200 * time.Millisecond):
+		// Expected: upsert is blocked
 	}
 
-	close(br.stopCh)
-	<-releaseDone
-
+	// Release stop → release finishes, then upsert should complete
+	close(br.releaseStop)
+	if err := <-releaseDone; err != nil {
+		t.Errorf("release failed: %v", err)
+	}
 	select {
 	case <-upsertDone:
 	case <-time.After(2 * time.Second):
 		t.Fatal("upsert still blocked after release completed")
 	}
+
+	// Final state: release wins (ctr-abc is reclaimed), upsert writes ctr-def after
+	final, _ := s.LookupByPrincipal("student-42")
+	if final == nil || final.ContainerID != "ctr-def" {
+		t.Errorf("expected ctr-def after release+upsert, got %v", final)
+	}
 }
 
-type recordingDrainer struct {
-	drains []string
+type orderedRecorder struct {
+	events []string
 }
 
-func (r *recordingDrainer) Drain(p string) error {
-	r.drains = append(r.drains, p)
+func (o *orderedRecorder) Drain(p string) error {
+	o.events = append(o.events, "drain:"+p)
+	return nil
+}
+func (o *orderedRecorder) CreateService(req CreateServiceRequest) (*ServiceResult, error) {
+	return nil, nil
+}
+func (o *orderedRecorder) StopService(cid string) error {
+	o.events = append(o.events, "stop:"+cid)
 	return nil
 }
 
@@ -397,18 +421,83 @@ func TestReleaseCallsDrainerBeforeStop(t *testing.T) {
 	s := NewSerializedStore()
 	l := lease.NewLease("student-42", "ctr-abc", "svc-student-42", "10.0.0.5", 2222, 8*time.Hour, 30*time.Minute)
 	s.UpsertLease(l)
-	d := &recordingDrainer{}
-	rt := &fakeRuntime{}
+	o := &orderedRecorder{}
 
-	err := s.ReleaseLeaseIf("student-42", lease.TriggerManual, func(l *Lease) bool { return true }, rt, d)
+	err := s.ReleaseLeaseIf("student-42", lease.TriggerManual, func(l *Lease) bool { return true }, o, o)
 	if err != nil {
 		t.Fatalf("ReleaseLeaseIf: %v", err)
 	}
-	if len(d.drains) != 1 || d.drains[0] != "student-42" {
-		t.Errorf("drainer not called before stop: %v", d.drains)
+	if len(o.events) < 2 || o.events[0] != "drain:student-42" || o.events[1] != "stop:ctr-abc" {
+		t.Errorf("expected [drain:student-42, stop:ctr-abc], got %v", o.events)
 	}
-	if rt.stoppedContainerID != "ctr-abc" {
-		t.Error("stop not called")
+}
+
+type failingDrainer struct{}
+
+func (f failingDrainer) Drain(p string) error {
+	return fmt.Errorf("drain failed")
+}
+
+func TestReleaseDrainFailureNoStop(t *testing.T) {
+	s := NewSerializedStore()
+	l := lease.NewLease("student-42", "ctr-abc", "svc-student-42", "10.0.0.5", 2222, 8*time.Hour, 30*time.Minute)
+	s.UpsertLease(l)
+	d := failingDrainer{}
+	rt := &fakeRuntime{}
+
+	err := s.ReleaseLeaseIf("student-42", lease.TriggerManual, func(l *Lease) bool { return true }, rt, d)
+	if err == nil {
+		t.Fatal("expected drain failure error")
+	}
+	if rt.stoppedContainerID != "" {
+		t.Error("stop must not be called after drain failure")
+	}
+	// Lease should remain Active
+	final, _ := s.LookupByPrincipal("student-42")
+	if final == nil || final.State != lease.StateActive {
+		t.Errorf("lease should be Active after drain failure, got %v", final)
+	}
+}
+
+func TestReleaseStopFailureClearsMetadata(t *testing.T) {
+	s := NewSerializedStore()
+	l := lease.NewLease("student-42", "ctr-abc", "svc-student-42", "10.0.0.5", 2222, 8*time.Hour, 30*time.Minute)
+	s.UpsertLease(l)
+	rt := &fakeRuntimeFailing{}
+
+	err := s.ReleaseLeaseIf("student-42", lease.TriggerManual, func(l *Lease) bool { return true }, rt, nil)
+	if err == nil {
+		t.Fatal("expected stop failure error")
+	}
+	final, _ := s.LookupByPrincipal("student-42")
+	if final == nil || final.State != lease.StateActive {
+		t.Errorf("lease should be Active after stop failure, got %v", final)
+	}
+	if final.ReleasedBy != "" {
+		t.Errorf("ReleasedBy should be empty after stop failure, got %s", final.ReleasedBy)
+	}
+}
+
+func TestMaxLifeTriggerRelease(t *testing.T) {
+	s := NewSerializedStore()
+	// Lease with 1ns max life => instantly expired
+	l := lease.NewLease("student-42", "ctr-abc", "svc-student-42", "10.0.0.5", 2222, 1*time.Nanosecond, 30*time.Minute)
+	time.Sleep(time.Millisecond)
+	s.UpsertLease(l)
+	rt := &fakeRuntime{}
+
+	err := s.ReleaseLeaseIf("student-42", lease.TriggerMaxLife,
+		func(l *Lease) bool { return l.IsExpired() },
+		rt, nil)
+	if err != nil {
+		t.Fatalf("max-life release: %v", err)
+	}
+	final, _ := s.LookupByPrincipal("student-42")
+	if final == nil || final.State != lease.StateReclaimed {
+		t.Errorf("state: %v", final)
+	}
+	if final.ReleasedBy != lease.TriggerMaxLife {
+		t.Errorf("ReleasedBy: %s", final.ReleasedBy)
 	}
 }
 
