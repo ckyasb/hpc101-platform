@@ -61,3 +61,18 @@ func (a *runtimeAdapter) CreateService(req controller.CreateServiceRequest) (*co
 func (a *runtimeAdapter) StopService(containerID string) error {
 	return a.client.StopAndRemoveContainer(context.Background(), containerID)
 }
+
+func (a *runtimeAdapter) ListContainers(labels map[string]string) ([]controller.DiscoveryContainer, error) {
+	ctrs, err := a.client.ListContainers(context.Background(), labels)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]controller.DiscoveryContainer, len(ctrs))
+	for i, c := range ctrs {
+		result[i] = controller.DiscoveryContainer{
+			ID: c.ID, Name: c.Name, Host: c.Host, Port: c.Port,
+			Labels: c.Labels,
+		}
+	}
+	return result, nil
+}

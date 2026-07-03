@@ -134,3 +134,40 @@ func safePrefix(s string, n int) string {
 	}
 	return s[:n]
 }
+
+
+func (c *Client) ListContainers(ctx context.Context, labels map[string]string) ([]DiscoveredContainer, error) {
+	filters := make([]string, 0, len(labels))
+	for k, v := range labels {
+		filters = append(filters, fmt.Sprintf("%s=%s", k, v))
+	}
+	containers, err := c.cli.ContainerList(ctx, container.ListOptions{
+		All: true,
+		Filters: filters,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("runtime: list containers: %w", err)
+	}
+	result := make([]DiscoveredContainer, 0, len(containers))
+	for _, ctr := range containers {
+		if len(ctr.Names) == 0 || len(ctr.Ports) == 0 {
+			continue
+		}
+		result = append(result, DiscoveredContainer{
+			ID:     ctr.ID,
+			Name:   strings.TrimPrefix(ctr.Names[0], "/"),
+			Host:   "podman-runtime.hpc101-runtime.svc.cluster.local",
+			Port:   ctr.Ports[0].PublicPort,
+			Labels: ctr.Labels,
+		})
+	}
+	return result, nil
+}
+
+type DiscoveredContainer struct {
+	ID     string
+	Name   string
+	Host   string
+	Port   uint16
+	Labels map[string]string
+}

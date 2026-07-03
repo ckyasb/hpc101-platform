@@ -21,8 +21,12 @@ func main() {
 	}
 	sub := newSubmissionService()
 	store := controller.NewSerializedStore()
-	if _, err := controller.ReattachLeases(store, nil); err != nil {
-		log.Printf("reattach: %v (startup will continue without rebuilding leases)", err)
+	if disc, ok := interface{}(rt).(controller.DiscoveryClient); ok {
+		if _, err := controller.ReattachLeases(store, disc); err != nil {
+			log.Printf("reattach: %v", err)
+		}
+	} else {
+		log.Printf("reattach: runtime does not support discovery (use go1.25 build)")
 	}
 	drainer := &controller.NoopBastionDrainer{}
 	h := controller.NewHandlerWithDrainer(store, rt, sub, drainer)
