@@ -559,7 +559,10 @@ func TestReattachLeases(t *testing.T) {
 			Labels: map[string]string{"platform.io/kind": "service"}}, // no owner
 	}}
 
-	result := ReattachLeases(s, d)
+	result, err := ReattachLeases(s, d)
+	if err != nil {
+		t.Fatalf("ReattachLeases: %v", err)
+	}
 	if result.Reattached != 1 {
 		t.Errorf("reattached: %d", result.Reattached)
 	}
@@ -579,11 +582,22 @@ func TestReattachRejectsNonSvcPrefix(t *testing.T) {
 			Labels: map[string]string{"platform.io/kind": "service", "platform.io/owner": "alice"}},
 	}}
 
-	result := ReattachLeases(s, d)
+	result, err := ReattachLeases(s, d)
+	if err != nil {
+		t.Fatalf("ReattachLeases: %v", err)
+	}
 	if result.Reattached != 0 {
 		t.Errorf("csj- prefix should not be reattached: %d", result.Reattached)
 	}
 	if result.Orphaned != 1 {
 		t.Errorf("expected 1 orphan, got %d", result.Orphaned)
+	}
+}
+
+func TestReattachNilClient(t *testing.T) {
+	s := NewSerializedStore()
+	_, err := ReattachLeases(s, nil)
+	if err == nil {
+		t.Fatal("expected error for nil discovery client")
 	}
 }

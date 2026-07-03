@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"fmt"
 	"log"
 	"strings"
 	"time"
@@ -33,13 +34,15 @@ type DiscoveryContainer struct {
 // ReattachLeases rebuilds active leases from discovered runtime containers.
 // Containers with svc- prefix and platform.io/* labels become active leases.
 // Stale containers (no matching label set) are logged as orphans.
-func ReattachLeases(store LeaseStore, client DiscoveryClient) ReattachResult {
+func ReattachLeases(store LeaseStore, client DiscoveryClient) (ReattachResult, error) {
+	if client == nil {
+		return ReattachResult{}, fmt.Errorf("reattach: discovery client is nil")
+	}
 	containers, err := client.ListContainers(map[string]string{
 		"platform.io/kind": "service",
 	})
 	if err != nil {
-		log.Printf("reattach: list containers failed: %v", err)
-		return ReattachResult{}
+		return ReattachResult{}, fmt.Errorf("reattach: list containers: %w", err)
 	}
 
 	var result ReattachResult
@@ -59,5 +62,5 @@ func ReattachLeases(store LeaseStore, client DiscoveryClient) ReattachResult {
 		result.Reattached++
 		log.Printf("reattach: recovered lease for %s (container %s)", owner, c.ID)
 	}
-	return result
+	return result, nil
 }
