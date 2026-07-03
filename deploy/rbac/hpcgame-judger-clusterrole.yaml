@@ -1,0 +1,73 @@
+# Least-Privilege ClusterRole for the hpcgame-judger pattern.
+# Replaces the original */*/* cluster-admin (reference/hpcgame-kube
+# hpcgame-judger/manifests/deploy.yaml:7-10) per plan AC-7.
+#
+# The judger needs only:
+#   - jobs: manage k8s Jobs per submission
+#   - pods, pods/log, pods/exec: monitor and interact with judge pods
+#   - namespaces: create/delete per-submission j-* namespaces
+#   - persistentvolumes, persistentvolumeclaims: manage PV/PVC for
+#     submission data (original judger-role in clusterrole.yaml)
+#   - configmaps, secrets, serviceaccounts: per-submission RBAC
+#     within j-* namespaces (where the judging pod runs)
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: hpc101-judger
+  labels:
+    app.kubernetes.io/part-of: hpc101-platform
+rules:
+  # Batch: create and watch per-submission judge Jobs
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch", "create", "delete", "deletecollection"]
+
+  # Core: monitor/exec into judge pods, manage namespaces
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "delete", "deletecollection"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["configmaps", "secrets", "serviceaccounts"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+
+  # Storage: manage PV/PVC for submission volumes (per judger-role)
+  - apiGroups: [""]
+    resources: ["persistentvolumes"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+
+  # RBAC: create per-submission RoleBindings within j-* namespaces
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles", "rolebindings"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+---
+# A namespaced role for controller components that manage service containers
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: hpc101-controller
+  labels:
+    app.kubernetes.io/part-of: hpc101-platform
+rules:
+  # controller only needs to read its own pod metadata and manage services
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch"]

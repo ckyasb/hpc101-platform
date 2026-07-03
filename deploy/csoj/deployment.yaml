@@ -1,0 +1,117 @@
+# CSOJ Deployment for hpc101-platform
+#
+# Deploys the zero-change CSOJ judge, built from the vendored subtree
+# at vendor/csoj/. Config is supplied via ConfigMap; storage uses
+# emptydirs (replace with PVCs for production persistence).
+#
+# Labels match the podman-runtime NetworkPolicy for cross-namespace access:
+#   app.kubernetes.io/part-of: hpc101-platform
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hpc101-platform
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    app.kubernetes.io/part-of: hpc101-platform
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: csoj
+  namespace: hpc101-platform
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: csoj
+  namespace: hpc101-platform
+  labels:
+    app: csoj
+    app.kubernetes.io/part-of: hpc101-platform
+spec:
+  selector:
+    app: csoj
+  ports:
+    - name: api
+      port: 8080
+      targetPort: 8080
+      protocol: TCP
+    - name: admin
+      port: 8081
+      targetPort: 8081
+      protocol: TCP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: csoj
+  namespace: hpc101-platform
+  labels:
+    app: csoj
+    app.kubernetes.io/part-of: hpc101-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: csoj
+  template:
+    metadata:
+      labels:
+        app: csoj
+        app.kubernetes.io/part-of: hpc101-platform
+    spec:
+      serviceAccountName: csoj
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: csoj
+          # Built from vendor/csoj/cmd/CSOJ/ — replace with actual image
+          image: hpc101-platform/csoj:latest
+          command: ["/csoj", "-c", "/etc/csoj/config.yaml"]
+          ports:
+            - containerPort: 8080
+              name: api
+            - containerPort: 8081
+              name: admin
+          volumeMounts:
+            - name: config
+              mountPath: /etc/csoj
+              readOnly: true
+            - name: data
+              mountPath: /data
+            - name: contests
+              mountPath: /contests
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+            readOnlyRootFilesystem: false  # CSOJ writes logs/DB to /data
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "2"
+              memory: "1Gi"
+          readinessProbe:
+            httpGet:
+              path: /api/v1/ping
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+        # Note: if CSOJ API doesn't expose /api/v1/ping,
+        # use tcpSocket on port 8080 instead.
+      volumes:
+        - name: config
+          configMap:
+            name: csoj-config
+        - name: data
+          emptyDir: {}
+        - name: contests
+          emptyDir: {}
