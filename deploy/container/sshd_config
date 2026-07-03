@@ -1,5 +1,5 @@
 # Per-container sshd config for student environments.
-# Runs on port 2222, allows SSH + scp/sftp/port forwarding.
+# Port 2222, pubkey-only, SFTP subsystem for scp/sftp/VSCode.
 # Authorized keys injected by controller via mount or env.
 Port 2222
 ListenAddress 0.0.0.0
@@ -13,6 +13,8 @@ AllowTcpForwarding yes
 X11Forwarding no
 AllowAgentForwarding yes
 PermitTTY yes
+# SFTP subsystem required for scp and VSCode Remote-SSH
+Subsystem sftp internal-sftp
 LogLevel VERBOSE
 MaxSessions 10
 ClientAliveInterval 60

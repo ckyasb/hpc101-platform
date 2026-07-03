@@ -70,9 +70,27 @@ spec:
       securityContext:
         seccompProfile:
           type: RuntimeDefault
+      initContainers:
+        - name: prepare-host-key
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              cp /secret/ssh_host_ed25519_key /keys/ssh_host_ed25519_key
+              chmod 0600 /keys/ssh_host_ed25519_key
+              chown 1000:1000 /keys/ssh_host_ed25519_key
+          volumeMounts:
+            - name: ssh-host-key-secret
+              mountPath: /secret
+              readOnly: true
+            - name: ssh-host-key
+              mountPath: /keys
+          securityContext:
+            runAsNonRoot: false
+            allowPrivilegeEscalation: false
       containers:
         - name: sshd
-          # Built via: docker build -f deploy/bastion/Dockerfile -t hpc101-platform/bastion:latest .
           image: hpc101-platform/bastion:latest
           ports:
             - containerPort: 2222
@@ -134,13 +152,15 @@ spec:
             items:
               - key: ca.pub
                 path: ca.pub
-        - name: ssh-host-key
+        - name: ssh-host-key-secret
           secret:
             secretName: bastion-host-key
-            defaultMode: 0600
+            defaultMode: 0400
             items:
               - key: ssh_host_ed25519_key
                 path: ssh_host_ed25519_key
+        - name: ssh-host-key
+          emptyDir: {}
         - name: principals-script
           configMap:
             name: bastion-principals-script
@@ -185,9 +205,16 @@ metadata:
 data:
   bastion-principals.sh: |
     #!/bin/sh
+    # AuthorizedPrincipalsCommand for hpc101-platform.
+    # Called by sshd with %i = certificate KeyId (student principal).
+    # Returns: permitopen="host:port" principal  (or nothing to reject).
     PRINCIPAL="$1"
     CTRL="${HPC101_CONTROLLER_URL:-http://controller.hpc101-platform.svc.cluster.local:8080}"
-    LEASE=$(curl -s --max-time 5 "${CTRL}/api/v1/leases/${PRINCIPAL}" 2>/dev/null || echo "")
+    LEASE=$(curl -s --max-time 5 "${CTRL}/api/v1/leases?principal=${PRINCIPAL}" 2>/dev/null || echo "")
     if [ -z "$LEASE" ]; then exit 0; fi
-    # TODO: parse JSON response from controller lease API (task10)
+    HOST=$(echo "$LEASE" | jq -r '.container_host // ""' 2>/dev/null)
+    PORT=$(echo "$LEASE" | jq -r '.container_port // ""' 2>/dev/null)
+    if [ -n "$HOST" ] && [ -n "$PORT" ]; then
+      echo "permitopen=\"${HOST}:${PORT}\" ${PRINCIPAL}"
+    fi
     exit 0

@@ -30,7 +30,7 @@ AuthorizedKeysFile none
 # AuthorizedPrincipalsCommand queries the platform lease store
 # to find the student's active container and returns:
 #   permitopen="<container_host>:<port>" <principal>
-# The %u token is replaced with the username (principal from cert).
+# The %i token is replaced with the certificate KeyId (principal).
 AuthorizedPrincipalsCommand /usr/local/bin/bastion-principals %i
 AuthorizedPrincipalsCommandUser nobody
 
