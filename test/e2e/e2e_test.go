@@ -79,8 +79,8 @@ func TestE2ECourseFlow(t *testing.T) {
 	}
 	binPath := buildCLI(t, home)
 
-	// Unique principal to avoid colliding with real leases/keys.
-	principal := "e2e-" + fmt.Sprintf("%d", time.Now().UnixNano()%100000)
+	// Unique, collision-proof principal to avoid colliding with real leases/keys.
+	principal := fmt.Sprintf("e2e-%d-%d", time.Now().UnixNano(), os.Getpid())
 
 	course := os.Getenv("HPC101_E2E_COURSE")
 	if course == "" {
@@ -107,13 +107,22 @@ func TestE2ECourseFlow(t *testing.T) {
 	t.Run("up", func(t *testing.T) {
 		out := runCLI(t, binPath, home, principal, "up", image, course, problemID)
 		t.Logf("up: %s", out)
-		// Register cleanup immediately so the container is released even on
-		// mid-flow failure (problem sync, submit, score, logs, or ssh).
-		t.Cleanup(func() {
-			// Best-effort release; ignore errors since the flow may already
-			// have released or the controller may be unreachable.
-			_ = exec.Command(binPath, "release").Run()
-		})
+	})
+
+	// Register cleanup on the parent test (not the subtest) so it runs at
+	// parent-test end and on failures after up. Best-effort release with the
+	// same isolated env as runCLI so it releases the correct principal.
+	t.Cleanup(func() {
+		releaseCmd := exec.Command(binPath, "release")
+		releaseCmd.Env = append(os.Environ(),
+			"HOME="+home,
+			"USER="+principal,
+			"CODOJO_CONTROLLER_URL="+controllerURL(),
+			"KUBECONFIG=",
+		)
+		// Ignore errors: the flow may have already released, or the controller
+		// may be unreachable. This must not mask earlier test failures.
+		_ = releaseCmd.Run()
 	})
 
 	var sshConfig string
