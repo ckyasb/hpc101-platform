@@ -195,12 +195,9 @@ func (c *Client) Submit(ctx context.Context, req SubmitRequest) (string, error) 
 		return "", fmt.Errorf("adapter: read submit response: %w", err)
 	}
 
-	var env csjResponse
-	if err := json.Unmarshal(body, &env); err != nil {
-		return "", fmt.Errorf("adapter: parse submit response: %w (body: %s)", err, string(body))
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 || env.Code != 0 {
-		return "", newCSOJError(http.MethodPost, fmt.Sprintf("problems/%s/submit", req.ProblemID), resp.StatusCode, env)
+	env, err := validateEnvelope(http.MethodPost, fmt.Sprintf("problems/%s/submit", req.ProblemID), resp, body)
+	if err != nil {
+		return "", err
 	}
 
 	var data struct {
@@ -233,12 +230,9 @@ func (c *Client) QueryResult(ctx context.Context, submissionID string) (*Submiss
 		return nil, fmt.Errorf("adapter: read query response: %w", err)
 	}
 
-	var env csjResponse
-	if err := json.Unmarshal(body, &env); err != nil {
-		return nil, fmt.Errorf("adapter: parse query response: %w", err)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 || env.Code != 0 {
-		return nil, newCSOJError(http.MethodGet, fmt.Sprintf("submissions/%s", submissionID), resp.StatusCode, env)
+	env, err := validateEnvelope(http.MethodGet, fmt.Sprintf("submissions/%s", submissionID), resp, body)
+	if err != nil {
+		return nil, err
 	}
 
 	var sub Submission
@@ -325,14 +319,7 @@ func (c *Client) doCSOJ(ctx context.Context, method, path string, body []byte) (
 	if err != nil {
 		return nil, fmt.Errorf("adapter: read %s %s: %w", method, path, err)
 	}
-	var env csjResponse
-	if err := json.Unmarshal(respBody, &env); err != nil {
-		return nil, fmt.Errorf("adapter: parse %s %s: %w", method, path, err)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 || env.Code != 0 {
-		return nil, newCSOJError(method, path, resp.StatusCode, env)
-	}
-	return &env, nil
+	return validateEnvelope(method, path, resp, respBody)
 }
 
 // getResource returns (true, nil) if the resource exists, (false, nil) for HTTP 404

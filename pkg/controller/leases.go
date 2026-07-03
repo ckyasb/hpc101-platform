@@ -62,6 +62,7 @@ func NewHandler(store LeaseStore, runtime ContainerCreator) *Handler {
 	h.mux.HandleFunc("/api/v1/release", h.handleRelease)
 	h.mux.HandleFunc("/api/v1/problems", h.handleProblems)
 	h.mux.HandleFunc("/api/v1/scores", h.handleScores)
+	h.mux.HandleFunc("/api/v1/submissions", h.handleSubmissions)
 	h.mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
@@ -204,4 +205,14 @@ func (h *Handler) handleProblems(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleScores(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{"scores": []interface{}{}})
+}
+
+func (h *Handler) handleSubmissions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	json.NewEncoder(w).Encode(map[string]string{"status": "submitted"})
 }

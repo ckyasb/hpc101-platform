@@ -29,7 +29,9 @@ func loadConfig() *config {
 		return &config{}
 	}
 	var c config
-	json.Unmarshal(d, &c)
+	if err := json.Unmarshal(d, &c); err != nil {
+		return &config{}
+	}
 	return &c
 }
 
@@ -175,29 +177,69 @@ func release() {
 }
 
 func listProblems() {
-	fmt.Println("no problems configured")
+	resp, err := http.Get(getControllerURL() + "/api/v1/problems")
+	if err != nil {
+		fatal("GET problems: %v", err)
+	}
+	defer resp.Body.Close()
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		fatal("read: %v", err)
+	}
+	var r map[string]interface{}
+	json.Unmarshal(b, &r)
+	problems, _ := r["problems"].([]interface{})
+	if len(problems) == 0 {
+		fmt.Println("no problems")
+		return
+	}
+	for _, p := range problems {
+		fmt.Printf("  %v\n", p)
+	}
 }
 
 func showScores() {
-	p := url.QueryEscape(os.Getenv("USER"))
-	resp, err := http.Get(getControllerURL() + "/api/v1/leases?principal=" + p)
+	resp, err := http.Get(getControllerURL() + "/api/v1/scores")
 	if err != nil {
-		fatal("GET leases: %v", err)
+		fatal("GET scores: %v", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		fatal("read: %v", err)
+	}
+	var r map[string]interface{}
+	json.Unmarshal(b, &r)
+	scores, _ := r["scores"].([]interface{})
+	if len(scores) == 0 {
 		fmt.Println("no scores")
 		return
 	}
-	fmt.Println("scores unavailable (CSOJ adapter pending)")
+	for _, s := range scores {
+		fmt.Printf("  %v\n", s)
+	}
 }
 
 func submit(args []string) {
 	if len(args) < 2 {
 		fatal("usage: submit <problem-id> <file>...")
 	}
-	fmt.Printf("submitting %v to problem %s\n", args[1:], args[0])
-	fmt.Println("submit pending CSOJ adapter integration")
+	problemID := args[0]
+	for _, fp := range args[1:] {
+		data, err := os.ReadFile(fp)
+		if err != nil {
+			fatal("read %s: %v", fp, err)
+		}
+		body := fmt.Sprintf(`{"problem_id":"%s","file_name":"%s","content":"%s"}`,
+			problemID, fp, string(data))
+		resp, err := http.Post(getControllerURL()+"/api/v1/submissions", "application/json", strings.NewReader(body))
+		if err != nil {
+			fatal("POST submit: %v", err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		fmt.Printf("submitted %s: %s\n", fp, b)
+	}
 }
 
 func fatal(format string, args ...interface{}) {
