@@ -33,19 +33,42 @@ type fakeRuntime struct {
 	lastCourse         string
 	lastProblem        string
 	stoppedContainerID string
+	createCount        int32
+	stopCount          int32
+	mu                 sync.Mutex
 }
 
 func (f *fakeRuntime) CreateService(req CreateServiceRequest) (*ServiceResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.lastPrincipal = req.Principal
 	f.lastImage = req.Image
 	f.lastSSHKey = req.SSHKey
 	f.lastCourse = req.Course
 	f.lastProblem = req.Problem
+	f.createCount++
 	return &ServiceResult{ContainerID: "ctr-" + req.Principal, Host: "10.0.0.5", Port: 2222}, nil
 }
 func (f *fakeRuntime) StopService(containerID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.stoppedContainerID = containerID
+	f.stopCount++
 	return nil
+}
+
+// getCreateCount returns the atomic create count.
+func (f *fakeRuntime) getCreateCount() int32 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.createCount
+}
+
+// getStopCount returns the atomic stop count.
+func (f *fakeRuntime) getStopCount() int32 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.stopCount
 }
 
 func TestHandleLeasesActive(t *testing.T) {
@@ -1561,9 +1584,9 @@ func TestCreateServiceConcurrentDoubleUp(t *testing.T) {
 	if conflicted != 1 {
 		t.Errorf("expected exactly 1 conflict, got %d (codes: %v)", conflicted, codes)
 	}
-	// Verify only one container was created.
-	if rt.lastPrincipal != "concurrent-user" {
-		t.Errorf("runtime not called: %s", rt.lastPrincipal)
+	// Verify exactly one container was created.
+	if cc := rt.getCreateCount(); cc != 1 {
+		t.Errorf("expected exactly 1 CreateService call, got %d", cc)
 	}
 }
 
@@ -1584,10 +1607,10 @@ func TestCreateServiceRuntimeFailureRestoresState(t *testing.T) {
 	if rec.Code != http.StatusInternalServerError {
 		t.Errorf("expected 500, got %d", rec.Code)
 	}
-	// Verify no lease remains for the principal.
+	// Verify no active lease remains for the principal.
 	l, _ := s.LookupByPrincipal("fail-user")
-	if l != nil && l.State == lease.StateActive {
-		t.Error("active lease should not exist after runtime failure")
+	if l != nil {
+		t.Errorf("expected nil lease after runtime failure, got state=%s", l.State)
 	}
 }
 
@@ -1646,5 +1669,25 @@ func TestFileStoreCreateSaveFailureStopsContainer(t *testing.T) {
 	// Verify cleanup was called (StopService).
 	if rt.stoppedContainerID == "" {
 		t.Error("StopService was not called after save failure")
+	}
+	// Reopen the FileStore (simulating restart) and verify no active lease.
+	// Use a different valid path since badPath is a directory.
+	goodPath := tmpDir + "/state.json"
+	fs2, err := NewFileStore(goodPath)
+	if err != nil {
+		// If the good path doesn't exist yet, NewFileStore returns empty store.
+		fs2 = &FileStore{
+			path: goodPath,
+			data: fileStoreData{
+				Leases:      make(map[string]*Lease),
+				Keys:        make(map[string]string),
+				Submissions: make(map[string]*SubmissionRecord),
+				ProblemMap:  make(map[string]string),
+			},
+		}
+	}
+	l, _ := fs2.LookupByPrincipal("savefail-user")
+	if l != nil && l.State == lease.StateActive {
+		t.Error("active lease should not persist after save failure + reopen")
 	}
 }

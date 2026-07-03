@@ -276,7 +276,10 @@ func (fs *FileStore) ReleaseLeaseIf(principal string, trigger lease.Trigger, sho
 		l.ReleasedBy = ""
 		l.ReleasedAt = lease.Lease{}.ReleasedAt
 		fs.data.Leases[principal] = l
-		_ = fs.unsafeSaveLocked()
+		if rollbackErr := fs.unsafeSaveLocked(); rollbackErr != nil {
+			// Return both the original error and the rollback failure.
+			return fmt.Errorf("release failed: %w (rollback persistence also failed: %v)", err, rollbackErr)
+		}
 		return err
 	}
 	fs.data.Leases[principal] = l
@@ -325,15 +328,23 @@ func (fs *FileStore) CreateLeaseForPrincipal(principal string, create func() (*S
 	// Persist to disk. If save fails, call cleanup to stop the container
 	// and restore prior state.
 	if saveErr := fs.unsafeSaveLocked(); saveErr != nil {
-		// Stop the just-created container.
+		// Stop the just-created container. Capture cleanup error.
+		var cleanupErr error
 		if cleanup != nil {
-			_ = cleanup(result)
+			cleanupErr = cleanup(result)
 		}
 		// Restore prior state.
 		if priorLease != nil {
 			fs.data.Leases[principal] = priorLease
 		} else {
 			delete(fs.data.Leases, principal)
+		}
+		// Return combined error so the caller knows both persistence and
+		// potentially cleanup failed. If cleanup also failed, the container
+		// may still be running; orphan recovery via platform.io/* labels
+		// will reclaim it on controller restart.
+		if cleanupErr != nil {
+			return nil, nil, fmt.Errorf("filestore: persist lease for %s: %w (cleanup also failed: %v; container may need orphan recovery)", principal, saveErr, cleanupErr)
 		}
 		return nil, nil, fmt.Errorf("filestore: persist lease for %s: %w", principal, saveErr)
 	}
