@@ -1625,33 +1625,23 @@ func (f *failingRuntime) StopService(containerID string) error { return nil }
 
 func TestFileStoreCreateSaveFailureStopsContainer(t *testing.T) {
 	tmpDir := t.TempDir()
-	// Use a path that will fail on write (a directory itself, not a file).
-	badPath := tmpDir + "/subdir"
-	os.MkdirAll(badPath, 0755) // Create as directory so file write fails.
+	statePath := tmpDir + "/state.json"
 
-	fs, err := NewFileStore(badPath)
-	if err == nil {
-		// If NewFileStore succeeded (file existed), create a different bad path.
-		badPath = tmpDir + "/subdir/nested/deep"
-		os.MkdirAll(badPath, 0755)
-		fs, err = NewFileStore(badPath)
-		if err == nil {
-			t.Skip("could not create a save-failing path in this environment")
-		}
+	// Initialize FileStore with a real path and save prior state.
+	fs, err := NewFileStore(statePath)
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
 	}
+	// Save some prior state (a Reclaimed lease for another principal).
+	priorLease := lease.NewLease("other-user", "ctr-prior", "svc-other-user", "10.0.0.1", 2222, 8*time.Hour, 30*time.Minute)
+	priorLease.State = lease.StateReclaimed
+	fs.UpsertLease(priorLease)
 
-	// If NewFileStore failed, the store is empty — upsert will try to save
-	// to the bad path and fail. But NewFileStore won't return a usable store.
-	// Instead, manually create a FileStore and point it at a bad path.
-	fs = &FileStore{
-		path: badPath, // directory, not writable as file
-		data: fileStoreData{
-			Leases:      make(map[string]*Lease),
-			Keys:        make(map[string]string),
-			Submissions: make(map[string]*SubmissionRecord),
-			ProblemMap:  make(map[string]string),
-		},
+	// Make the parent directory non-writable so the tmp+rename save fails.
+	if err := os.Chmod(tmpDir, 0555); err != nil {
+		t.Fatalf("chmod parent: %v", err)
 	}
+	defer os.Chmod(tmpDir, 0755) // Restore for cleanup.
 
 	rt := &fakeRuntime{}
 	h := NewHandler(fs, rt, nil)
@@ -1670,24 +1660,174 @@ func TestFileStoreCreateSaveFailureStopsContainer(t *testing.T) {
 	if rt.stoppedContainerID == "" {
 		t.Error("StopService was not called after save failure")
 	}
-	// Reopen the FileStore (simulating restart) and verify no active lease.
-	// Use a different valid path since badPath is a directory.
-	goodPath := tmpDir + "/state.json"
-	fs2, err := NewFileStore(goodPath)
+
+	// Restore permissions and reopen the SAME path to verify restart state.
+	os.Chmod(tmpDir, 0755)
+	fs2, err := NewFileStore(statePath)
 	if err != nil {
-		// If the good path doesn't exist yet, NewFileStore returns empty store.
-		fs2 = &FileStore{
-			path: goodPath,
-			data: fileStoreData{
-				Leases:      make(map[string]*Lease),
-				Keys:        make(map[string]string),
-				Submissions: make(map[string]*SubmissionRecord),
-				ProblemMap:  make(map[string]string),
-			},
-		}
+		t.Fatalf("reopen FileStore: %v", err)
 	}
+	// The failed active lease must not be present.
 	l, _ := fs2.LookupByPrincipal("savefail-user")
 	if l != nil && l.State == lease.StateActive {
 		t.Error("active lease should not persist after save failure + reopen")
+	}
+	// Prior Reclaimed lease should be preserved.
+	prior, _ := fs2.LookupByPrincipal("other-user")
+	if prior == nil {
+		t.Error("prior Reclaimed lease should be preserved after save failure")
+	}
+}
+
+// Round 6: Cleanup-failure error propagation test
+
+type failStopRuntime struct {
+	createCount int32
+	mu          sync.Mutex
+}
+
+func (f *failStopRuntime) CreateService(req CreateServiceRequest) (*ServiceResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.createCount++
+	return &ServiceResult{ContainerID: "ctr-" + req.Principal, Host: "10.0.0.5", Port: 2222}, nil
+}
+func (f *failStopRuntime) StopService(containerID string) error {
+	return fmt.Errorf("stop service failed: container unreachable")
+}
+
+func TestFileStoreCreateSaveFailureWithCleanupFailure(t *testing.T) {
+	tmpDir := t.TempDir()
+	statePath := tmpDir + "/state.json"
+
+	fs, err := NewFileStore(statePath)
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+
+	// Make parent non-writable so save fails.
+	os.Chmod(tmpDir, 0555)
+	defer os.Chmod(tmpDir, 0755)
+
+	rt := &failStopRuntime{}
+	// Test directly on CreateLeaseForPrincipal to assert error content.
+	_, _, err = fs.CreateLeaseForPrincipal("cleanup-fail-user",
+		func() (*ServiceResult, error) {
+			return rt.CreateService(CreateServiceRequest{Principal: "cleanup-fail-user"})
+		},
+		func(res *ServiceResult) *Lease {
+			return lease.NewLease("cleanup-fail-user", res.ContainerID, "svc-cleanup-fail", res.Host, res.Port, 8*time.Hour, 30*time.Minute)
+		},
+		func(res *ServiceResult) error {
+			return rt.StopService(res.ContainerID)
+		},
+	)
+	if err == nil {
+		t.Fatal("expected error from CreateLeaseForPrincipal with save + cleanup failure")
+	}
+	errMsg := err.Error()
+	if !strings.Contains(errMsg, "persist") {
+		t.Errorf("error should mention persistence failure: %s", errMsg)
+	}
+	if !strings.Contains(errMsg, "cleanup also failed") {
+		t.Errorf("error should mention cleanup failure: %s", errMsg)
+	}
+	if !strings.Contains(errMsg, "orphan recovery") {
+		t.Errorf("error should mention orphan recovery: %s", errMsg)
+	}
+}
+
+// Round 6: HTTP create-vs-release serialization test
+
+type blockingStopRuntime struct {
+	createCount int32
+	stopCount   int32
+	mu          sync.Mutex
+	stopCh      chan struct{}
+	blockStop   chan struct{}
+}
+
+func newBlockingStopRuntime() *blockingStopRuntime {
+	return &blockingStopRuntime{
+		stopCh:    make(chan struct{}),
+		blockStop: make(chan struct{}),
+	}
+}
+func (r *blockingStopRuntime) CreateService(req CreateServiceRequest) (*ServiceResult, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.createCount++
+	return &ServiceResult{ContainerID: "ctr-" + req.Principal, Host: "10.0.0.5", Port: 2222}, nil
+}
+func (r *blockingStopRuntime) StopService(containerID string) error {
+	// Signal that StopService was called, then wait for unblock.
+	close(r.stopCh)
+	<-r.blockStop
+	r.mu.Lock()
+	r.stopCount++
+	r.mu.Unlock()
+	return nil
+}
+
+func TestCreateVsReleaseHTTPSerialization(t *testing.T) {
+	rt := newBlockingStopRuntime()
+	s := NewSerializedStore()
+
+	// Create an active lease first.
+	l := lease.NewLease("race-user", "ctr-1", "svc-race", "10.0.0.1", 2222, 8*time.Hour, 30*time.Minute)
+	s.UpsertLease(l)
+
+	h := NewHandler(s, rt, nil)
+
+	// Start DELETE /release in a goroutine — it will block in StopService.
+	releaseDone := make(chan int)
+	go func() {
+		req := httptest.NewRequest(http.MethodDelete, "/api/v1/release?principal=race-user", nil)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		releaseDone <- rec.Code
+	}()
+
+	// Wait for StopService to be called (release is blocked).
+	<-rt.stopCh
+
+	// Try POST /services for the same principal — should block until release finishes.
+	upDone := make(chan int)
+	go func() {
+		body := `{"principal":"race-user","image":"img:2","ssh_key":"ssh-rsa AAA","course":"cs101","problem":"hw1"}`
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/services", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		upDone <- rec.Code
+	}()
+
+	// Give the up request a moment to be blocked (not strictly necessary, but
+	// ensures the serialization is exercised).
+	time.Sleep(50 * time.Millisecond)
+
+	// Unblock StopService — release completes, then up can proceed.
+	close(rt.blockStop)
+
+	// Both should complete.
+	releaseCode := <-releaseDone
+	if releaseCode != http.StatusOK {
+		t.Errorf("release: expected 200, got %d", releaseCode)
+	}
+	upCode := <-upDone
+	if upCode != http.StatusCreated {
+		t.Errorf("up after release: expected 201, got %d", upCode)
+	}
+
+	// Verify exactly one create call (from the second up, not the pre-existing).
+	rt.mu.Lock()
+	cc := rt.createCount
+	sc := rt.stopCount
+	rt.mu.Unlock()
+	if cc != 1 {
+		t.Errorf("expected 1 CreateService call, got %d", cc)
+	}
+	if sc != 1 {
+		t.Errorf("expected 1 StopService call, got %d", sc)
 	}
 }
