@@ -65,12 +65,19 @@ type SubmissionService interface {
 
 // SubmissionResult holds the judging outcome from CSOJ.
 type SubmissionResult struct {
-	SubmissionID string  `json:"submission_id"`
-	ProblemID    string  `json:"problem_id"`
-	Status       string  `json:"status"` // Queued, Running, Success, Failed
-	Score        float64 `json:"score"`
-	Performance  float64 `json:"performance"`
-	Info         string  `json:"info,omitempty"`
+	SubmissionID string          `json:"submission_id"`
+	ProblemID    string          `json:"problem_id"`
+	Status       string          `json:"status"` // Queued, Running, Success, Failed
+	Score        float64         `json:"score"`
+	Performance  float64         `json:"performance"`
+	Info         string          `json:"info,omitempty"`
+	Containers   []ContainerInfo `json:"containers,omitempty"`
+}
+
+// ContainerInfo holds CSOJ container metadata for log streaming.
+type ContainerInfo struct {
+	ID    string `json:"id"`
+	Image string `json:"image"`
 }
 
 // SubmissionRecord tracks a submission through its lifecycle.
@@ -339,10 +346,23 @@ func (h *Handler) handleProblems(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 		return
 	}
+	// Collect submissions from handler memory and store.
+	recs := make(map[string]*SubmissionRecord)
 	h.mu.Lock()
+	for k, v := range h.submissions {
+		recs[k] = v
+	}
+	h.mu.Unlock()
+	if s, ok := h.store.(interface{ AllSubmissions() []*SubmissionRecord }); ok {
+		for _, r := range s.AllSubmissions() {
+			if _, exists := recs[r.ID]; !exists {
+				recs[r.ID] = r
+			}
+		}
+	}
 	seen := map[string]bool{}
 	var problems []map[string]string
-	for _, rec := range h.submissions {
+	for _, rec := range recs {
 		if !seen[rec.ProblemID] {
 			seen[rec.ProblemID] = true
 			problems = append(problems, map[string]string{
@@ -351,7 +371,6 @@ func (h *Handler) handleProblems(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 	}
-	h.mu.Unlock()
 	if len(problems) == 0 {
 		problems = []map[string]string{}
 	}
@@ -364,7 +383,19 @@ func (h *Handler) handleScores(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 		return
 	}
+	recs := make(map[string]*SubmissionRecord)
 	h.mu.Lock()
+	for k, v := range h.submissions {
+		recs[k] = v
+	}
+	h.mu.Unlock()
+	if s, ok := h.store.(interface{ AllSubmissions() []*SubmissionRecord }); ok {
+		for _, r := range s.AllSubmissions() {
+			if _, exists := recs[r.ID]; !exists {
+				recs[r.ID] = r
+			}
+		}
+	}
 	type scoreEntry struct {
 		ProblemID   string  `json:"problem_id"`
 		Score       float64 `json:"score"`
@@ -372,7 +403,7 @@ func (h *Handler) handleScores(w http.ResponseWriter, r *http.Request) {
 		Status      string  `json:"status"`
 	}
 	var scores []scoreEntry
-	for _, rec := range h.submissions {
+	for _, rec := range recs {
 		if rec.Result.Status == "Success" || rec.Result.Status == "Failed" {
 			scores = append(scores, scoreEntry{
 				ProblemID:   rec.ProblemID,
@@ -382,7 +413,6 @@ func (h *Handler) handleScores(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 	}
-	h.mu.Unlock()
 	if len(scores) == 0 {
 		scores = []scoreEntry{}
 	}
@@ -424,15 +454,28 @@ func (h *Handler) handleSubmissions(w http.ResponseWriter, r *http.Request) {
 		}
 		files[name] = data
 	}
-	id, err := h.submission.Submit(r.Context(), req.ProblemID, files)
+	// Track the submission for later result retrieval.
+	principal := r.URL.Query().Get("principal")
+	course := r.URL.Query().Get("course")
+
+	// Resolve platform problem ID to CSOJ problem ID via mapping.
+	mappedID := req.ProblemID
+	if course != "" {
+		if resolver, ok := h.store.(interface{ ResolveProblem(string, string) string }); ok {
+			if mid := resolver.ResolveProblem(course, req.ProblemID); mid != "" {
+				mappedID = mid
+			}
+		}
+	}
+	id, err := h.submission.Submit(r.Context(), mappedID, files)
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
 		return
 	}
 
-	// Track the submission for later result retrieval.
-	principal := r.URL.Query().Get("principal")
-	course := r.URL.Query().Get("course")
+	// Save submission record.
+	principal2 := principal
+	_ = principal2
 	if principal == "" {
 		principal = "anonymous"
 	}
@@ -449,7 +492,7 @@ func (h *Handler) handleSubmissions(w http.ResponseWriter, r *http.Request) {
 	if s, ok := h.store.(interface{ SaveSubmission(*SubmissionRecord) error }); ok {
 		_ = s.SaveSubmission(rec)
 	}
-	_ = course // used by adapter for scoped CSOJ ID when submitting
+
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
@@ -491,6 +534,11 @@ func (h *Handler) handleSubmissionByID(w http.ResponseWriter, r *http.Request) {
 			h.submissions[id].Result = *result
 		}
 		h.mu.Unlock()
+		// Persist updated result to store.
+		if s, ok := h.store.(interface{ SaveSubmission(*SubmissionRecord) error }); ok {
+			rec.Result = *result
+			_ = s.SaveSubmission(rec)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(result)
 		return
@@ -534,10 +582,15 @@ func (h *Handler) handleSubmissionLogs(w http.ResponseWriter, r *http.Request) {
 		StreamLogs(ctx context.Context, submissionID, containerID string, cb func(stream, data string) error) error
 	}
 	if streamer, ok := interface{}(h.submission).(logStreamer); ok {
+		// Use real CSOJ container ID if available, fall back to submission ID.
+		containerID := rec.Result.SubmissionID
+		if len(rec.Result.Containers) > 0 {
+			containerID = rec.Result.Containers[0].ID
+		}
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
 		flusher, _ := w.(http.Flusher)
-		err := streamer.StreamLogs(r.Context(), rec.Result.SubmissionID, rec.Result.SubmissionID+"-0",
+		err := streamer.StreamLogs(r.Context(), rec.Result.SubmissionID, containerID,
 			func(stream, data string) error {
 				fmt.Fprintf(w, "[%s] %s\n", stream, data)
 				if flusher != nil {

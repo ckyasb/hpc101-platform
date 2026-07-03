@@ -16,6 +16,10 @@ type runtimeAdapter struct {
 	client *runtime.Client
 }
 
+// Compile-time assertions: runtimeAdapter satisfies required interfaces.
+var _ controller.DiscoveryClient = (*runtimeAdapter)(nil)
+var _ controller.ResourceCleaner = (*runtimeAdapter)(nil)
+
 func newRuntimeAdapter(endpoint string) (*runtimeAdapter, error) {
 	cli, err := runtime.NewClient(endpoint)
 	if err != nil {

@@ -12,6 +12,7 @@ type serializedStore struct {
 	leases      map[string]*Lease
 	keys        map[string]string            // principal → public key
 	submissions map[string]*SubmissionRecord // submissionID → record
+	problemMap  map[string]string            // "course:problem" → csojProblemID
 }
 
 func NewSerializedStore() *serializedStore {
@@ -19,6 +20,7 @@ func NewSerializedStore() *serializedStore {
 		leases:      make(map[string]*Lease),
 		keys:        make(map[string]string),
 		submissions: make(map[string]*SubmissionRecord),
+		problemMap:  make(map[string]string),
 	}
 }
 
@@ -113,7 +115,8 @@ func (s *serializedStore) ReleaseLeaseIf(principal string, trigger lease.Trigger
 func (s *serializedStore) SaveSubmission(rec *SubmissionRecord) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.submissions[rec.ID] = rec
+	cpy := *rec
+	s.submissions[rec.ID] = &cpy
 	return nil
 }
 
@@ -125,7 +128,8 @@ func (s *serializedStore) GetSubmission(id string) (*SubmissionRecord, error) {
 	if !ok {
 		return nil, fmt.Errorf("submission %s not found", id)
 	}
-	return r, nil
+	cpy := *r
+	return &cpy, nil
 }
 
 // AllSubmissions returns all persisted submission records.
@@ -137,4 +141,18 @@ func (s *serializedStore) AllSubmissions() []*SubmissionRecord {
 		result = append(result, r)
 	}
 	return result
+}
+
+// MapProblem stores the CSOJ problem ID for a course+platform problem.
+func (s *serializedStore) MapProblem(course, platformID, csojID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.problemMap[course+":"+platformID] = csojID
+}
+
+// ResolveProblem returns the mapped CSOJ problem ID, or empty if not found.
+func (s *serializedStore) ResolveProblem(course, platformID string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.problemMap[course+":"+platformID]
 }

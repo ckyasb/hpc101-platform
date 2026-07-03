@@ -624,3 +624,82 @@ func TestReattachNilClient(t *testing.T) {
 		t.Fatal("expected error for nil discovery client")
 	}
 }
+
+func TestReattachReclaimsVolumes(t *testing.T) {
+	s := NewSerializedStore()
+	d := &fakeDiscovery{
+		containers: []DiscoveryContainer{
+			{ID: "c1", Name: "svc-alice", Host: "h", Port: 22, Labels: map[string]string{"platform.io/kind": "service", "platform.io/owner": "alice"}},
+		},
+		volumes: []DiscoveryVolume{
+			{Name: "svc-alice-vol", Driver: "local", Labels: map[string]string{"platform.io/kind": "service", "platform.io/owner": "alice"}},
+			{Name: "svc-orphan-vol", Driver: "local", Labels: map[string]string{"platform.io/kind": "service", "platform.io/owner": "bob"}},
+			{Name: "csj-judge-vol", Driver: "local", Labels: map[string]string{"platform.io/kind": "service", "platform.io/owner": "bob"}},
+		},
+	}
+	result, err := ReattachLeases(s, d)
+	if err != nil {
+		t.Fatalf("ReattachLeases: %v", err)
+	}
+	if result.Reattached != 1 {
+		t.Errorf("reattached: %d", result.Reattached)
+	}
+	// svc-alice-vol belongs to active owner alice, not orphan
+	// svc-orphan-vol belongs to bob who has no active container -> orphan
+	// csj-judge-vol has csj- prefix -> skipped
+	if result.OrphanVolumes != 1 {
+		t.Errorf("orphan volumes: expected 1, got %d", result.OrphanVolumes)
+	}
+}
+
+func TestReattachPreservesCSJResources(t *testing.T) {
+	s := NewSerializedStore()
+	d := &fakeDiscovery{
+		containers: []DiscoveryContainer{
+			{ID: "c1", Name: "csj-judge-1", Host: "h", Port: 0, Labels: map[string]string{"platform.io/kind": "service", "platform.io/owner": "alice"}},
+		},
+		volumes: []DiscoveryVolume{
+			{Name: "csj-vol-1", Driver: "local", Labels: map[string]string{"platform.io/kind": "service", "platform.io/owner": "alice"}},
+		},
+		networks: []DiscoveryNetwork{
+			{ID: "n1", Name: "csj-net-1", Driver: "bridge", Labels: map[string]string{"platform.io/kind": "service"}},
+		},
+	}
+	result, err := ReattachLeases(s, d)
+	if err != nil {
+		t.Fatalf("ReattachLeases: %v", err)
+	}
+	// csj- prefixed container is orphan (no svc- prefix) but csj- volumes/networks are never reclaimed
+	if result.Orphaned != 1 {
+		t.Errorf("csj- container should be orphan: got %d", result.Orphaned)
+	}
+	if result.OrphanVolumes != 0 {
+		t.Errorf("csj- volumes must not be counted as orphan: got %d", result.OrphanVolumes)
+	}
+	if result.OrphanNetworks != 0 {
+		t.Errorf("csj- networks must not be counted as orphan: got %d", result.OrphanNetworks)
+	}
+}
+
+func TestReattachNetworkDiscovery(t *testing.T) {
+	s := NewSerializedStore()
+	d := &fakeDiscovery{
+		containers: []DiscoveryContainer{
+			{ID: "c1", Name: "svc-alice", Host: "h", Port: 22, Labels: map[string]string{"platform.io/kind": "service", "platform.io/owner": "alice"}},
+		},
+		networks: []DiscoveryNetwork{
+			{ID: "n1", Name: "svc-alice-net", Driver: "bridge", Labels: map[string]string{"platform.io/kind": "service", "platform.io/owner": "alice"}},
+			{ID: "n2", Name: "svc-orphan-net", Driver: "bridge", Labels: map[string]string{"platform.io/kind": "service", "platform.io/owner": "charlie"}},
+		},
+	}
+	result, err := ReattachLeases(s, d)
+	if err != nil {
+		t.Fatalf("ReattachLeases: %v", err)
+	}
+	if result.Reattached != 1 {
+		t.Errorf("reattached: %d", result.Reattached)
+	}
+	if result.OrphanNetworks != 1 {
+		t.Errorf("orphan networks: expected 1, got %d", result.OrphanNetworks)
+	}
+}

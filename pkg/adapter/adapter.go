@@ -31,6 +31,12 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// csjEncode safely encodes a string for use in a CSOJ problem ID.
+// Uses base64url without padding to produce URL-safe, collision-free identifiers.
+func csjEncode(s string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(s))
+}
+
 // Client is the adapter's high-level interface to CSOJ.
 type Client struct {
 	baseURL    string
@@ -304,7 +310,7 @@ func (c *Client) StreamLogs(ctx context.Context, submissionID, containerID strin
 // problem via POST /api/v1/contests/:contestID/problems.
 // Routes from vendor/csoj/internal/api/admin/router.go:66,72.
 func CSOJProblemID(contestID, platformProblemID string) string {
-	return contestID + "--" + platformProblemID
+	return "cdj_" + csjEncode(contestID) + "_" + csjEncode(platformProblemID)
 }
 
 // SyncProblem ensures the platform problem has a corresponding CSOJ
@@ -465,15 +471,22 @@ func (s *SubmissionService) QueryResult(ctx context.Context, submissionID string
 		Score:        float64(sub.Score),
 		Performance:  float64(sub.Performance),
 		Info:         info,
+		Containers:   sub.Containers,
 	}, nil
+}
+
+// StreamLogs wraps adapter.Client.StreamLogs for the controller log endpoint.
+func (s *SubmissionService) StreamLogs(ctx context.Context, submissionID, containerID string, cb func(stream, data string) error) error {
+	return s.client.StreamLogs(ctx, submissionID, containerID, cb)
 }
 
 // SubmissionResult is the query result type for the controller interface.
 type SubmissionResult struct {
-	SubmissionID string  `json:"submission_id"`
-	ProblemID    string  `json:"problem_id"`
-	Status       string  `json:"status"`
-	Score        float64 `json:"score"`
-	Performance  float64 `json:"performance"`
-	Info         string  `json:"info,omitempty"`
+	SubmissionID string      `json:"submission_id"`
+	ProblemID    string      `json:"problem_id"`
+	Status       string      `json:"status"`
+	Score        float64     `json:"score"`
+	Performance  float64     `json:"performance"`
+	Info         string      `json:"info,omitempty"`
+	Containers   []Container `json:"containers,omitempty"`
 }

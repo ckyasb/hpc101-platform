@@ -36,6 +36,10 @@ func (s *adapterSubmission) QueryResult(ctx context.Context, submissionID string
 	if err != nil {
 		return nil, err
 	}
+	containers := make([]controller.ContainerInfo, len(r.Containers))
+	for i, c := range r.Containers {
+		containers[i] = controller.ContainerInfo{ID: c.ID, Image: c.Image}
+	}
 	return &controller.SubmissionResult{
 		SubmissionID: r.SubmissionID,
 		ProblemID:    r.ProblemID,
@@ -43,5 +47,10 @@ func (s *adapterSubmission) QueryResult(ctx context.Context, submissionID string
 		Score:        r.Score,
 		Performance:  r.Performance,
 		Info:         r.Info,
+		Containers:   containers,
 	}, nil
+}
+
+func (s *adapterSubmission) StreamLogs(ctx context.Context, submissionID, containerID string, cb func(stream, data string) error) error {
+	return s.svc.StreamLogs(ctx, submissionID, containerID, cb)
 }

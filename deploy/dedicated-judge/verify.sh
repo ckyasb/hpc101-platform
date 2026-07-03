@@ -41,13 +41,20 @@ podman run --rm --cpus 0.5 --memory 128m alpine:latest sh -c '
   echo "CPU limit: $(cat /sys/fs/cgroup/cpu.max 2>/dev/null || echo check-podman-version)"
   echo "Memory limit: $(cat /sys/fs/cgroup/memory.max 2>/dev/null || echo check-podman-version)"
   echo "PASS: resource limits applied"
-' || echo "WARN: cgroup v2 paths may differ; verify with podman stats"
+' || { echo "FAIL: resource limits not enforced — cgroup controllers missing"; exit 1; }
 
 # 4. Verify Docker-compatible API
 echo ""
 echo "[4/5] Docker-compatible API (AC-1)..."
 curl -s http://localhost:2375/version > /dev/null 2>&1 || { echo "FAIL: docker-compat API not reachable"; exit 1; }
 echo "PASS: docker-compat API reachable"
+# Verify Docker-compatible create/exec/remove operations
+CTR_ID=$(curl -s -X POST http://localhost:2375/containers/create -H 'Content-Type: application/json' -d '{"Image":"alpine:latest","Cmd":["sleep","5"]}' | grep -o '"Id":"[^"]*"' | cut -d'"' -f4)
+if [ -z "$CTR_ID" ]; then echo "FAIL: container create via Docker API"; exit 1; fi
+curl -s -X POST "http://localhost:2375/containers/${CTR_ID}/start" > /dev/null 2>&1 || { echo "FAIL: container start via Docker API"; exit 1; }
+curl -s -X POST "http://localhost:2375/containers/${CTR_ID}/stop" > /dev/null 2>&1
+curl -s -X DELETE "http://localhost:2375/containers/${CTR_ID}?force=true" > /dev/null 2>&1
+echo "PASS: Docker API create/start/stop/remove"
 
 # 5. Test container lifecycle
 echo ""
