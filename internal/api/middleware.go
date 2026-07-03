@@ -1,0 +1,143 @@
+package api
+
+import (
+	"crypto/hmac"
+	"crypto/sha512"
+	"fmt"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/ZJUSCT/CSOJ/internal/auth"
+	"github.com/ZJUSCT/CSOJ/internal/config"
+	"github.com/ZJUSCT/CSOJ/internal/database"
+	"github.com/ZJUSCT/CSOJ/internal/util"
+	"gorm.io/gorm"
+
+	"github.com/gin-gonic/gin"
+)
+
+// CORSMiddleware provides a configurable CORS middleware.
+func CORSMiddleware(cfg config.CORS) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// If no origins are configured, do nothing.
+		if len(cfg.AllowedOrigins) == 0 {
+			c.Next()
+			return
+		}
+
+		origin := c.Request.Header.Get("Origin")
+		allowOrigin := ""
+
+		// Check if the origin is in the allowed list
+		for _, o := range cfg.AllowedOrigins {
+			if o == "*" {
+				allowOrigin = "*"
+				break
+			}
+			if o == origin {
+				allowOrigin = origin
+				break
+			}
+		}
+
+		// Only set headers if the origin is allowed.
+		if allowOrigin != "" {
+			c.Writer.Header().Set("Access-Control-Allow-Origin", allowOrigin)
+			c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
+			c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With")
+			c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS, GET, PUT, PATCH, DELETE")
+
+			if c.Request.Method == "OPTIONS" {
+				c.AbortWithStatus(http.StatusNoContent)
+				return
+			}
+		}
+		c.Next()
+	}
+}
+
+func AuthMiddleware(secret string, db *gorm.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		authHeader := c.GetHeader("Authorization")
+		if authHeader == "" {
+			util.Error(c, http.StatusUnauthorized, "Authorization header is required")
+			c.Abort()
+			return
+		}
+
+		parts := strings.Split(authHeader, " ")
+		if len(parts) != 2 || parts[0] != "Bearer" {
+			util.Error(c, http.StatusUnauthorized, "Authorization header format must be Bearer {token}")
+			c.Abort()
+			return
+		}
+
+		tokenString := parts[1]
+		claims, err := auth.ValidateJWT(tokenString, secret)
+		if err != nil {
+			util.Error(c, http.StatusUnauthorized, err.Error())
+			c.Abort()
+			return
+		}
+
+		userID := claims.Subject
+		user, err := database.GetUserByID(db, userID)
+		if err != nil {
+			util.Error(c, http.StatusUnauthorized, "User not found")
+			c.Abort()
+			return
+		}
+
+		if user.BannedUntil != nil && time.Now().Before(*user.BannedUntil) {
+			c.JSON(http.StatusForbidden, gin.H{
+				"code":    -1,
+				"message": "You have been banned from this service.",
+				"data": gin.H{
+					"ban_reason":   user.BanReason,
+					"banned_until": user.BannedUntil.Format(time.RFC3339),
+				},
+			})
+			c.Abort()
+			return
+		}
+
+		c.Set("userID", claims.Subject)
+		c.Next()
+	}
+}
+func AssetsAuthMiddleware(secret string, db *gorm.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		token := c.Query("token")
+		expires := c.Query("expires")
+
+		if token == "" || expires == "" {
+			util.Error(c, http.StatusUnauthorized, "Token and expires query parameters are required")
+			c.Abort()
+			return
+		}
+
+		expireTime, err := strconv.ParseInt(expires, 10, 64)
+		if err != nil || time.Now().Unix() > expireTime {
+			util.Error(c, http.StatusUnauthorized, "Token has expired")
+			c.Abort()
+			return
+		}
+
+		assetPath := c.Request.URL.Path
+		message := fmt.Sprintf("%s|%d", assetPath, expireTime)
+
+		mac := hmac.New(sha512.New, []byte(secret))
+		mac.Write([]byte(message))
+		expectedMAC := fmt.Sprintf("%x", mac.Sum(nil))
+
+		if !hmac.Equal([]byte(expectedMAC), []byte(token)) {
+			util.Error(c, http.StatusUnauthorized, "Invalid token")
+			c.Abort()
+			return
+		}
+
+		c.Next()
+	}
+}
