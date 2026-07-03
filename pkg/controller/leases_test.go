@@ -334,26 +334,37 @@ func (f *fakeRuntimeFailing) StopService(containerID string) error {
 
 func TestSerializedStoreConcurrentReleaseAndUp(t *testing.T) {
 	s := NewSerializedStore()
-	l := lease.NewLease("student-42", "ctr-abc", "svc-student-42", "10.0.0.5", 2222, 1*time.Nanosecond, 30*time.Minute)
+	l := lease.NewLease("student-42", "ctr-abc", "svc-student-42", "10.0.0.5", 2222, 8*time.Hour, 30*time.Minute)
 	s.UpsertLease(l)
 	rt := &fakeRuntime{}
 
-	err1 := make(chan error, 1)
-	go func() { err1 <- s.ReleaseLease("student-42", rt) }()
-	time.Sleep(10 * time.Millisecond)
+	// Start release in goroutine
+	done := make(chan error, 1)
+	go func() { done <- s.ReleaseLease("student-42", rt) }()
 
-	// After release (even if stop may fail), verify state consistency
-	l2, _ := s.LookupByPrincipal("student-42")
-	if l2 == nil {
-		t.Fatal("lease lost after concurrent release")
+	// Concurrently upsert a fresh lease (simulating 'up' during release)
+	time.Sleep(5 * time.Millisecond)
+	l2 := lease.NewLease("student-42", "ctr-def", "svc-student-42", "10.0.0.6", 2222, 8*time.Hour, 30*time.Minute)
+	err := s.UpsertLease(l2)
+	if err != nil {
+		t.Fatalf("upsert during release: %v", err)
 	}
-	select {
-	case e := <-err1:
-		if e != nil {
-			t.Logf("release returned error: %v (expected if already releasing)", e)
-		}
-	default:
-		t.Log("release still in progress")
+
+	// Wait for release to finish
+	releaseErr := <-done
+
+	// Verify lease still exists (no data loss)
+	final, _ := s.LookupByPrincipal("student-42")
+	if final == nil {
+		t.Fatal("lease lost after concurrent release + upsert")
+	}
+	// Final container should be one of the two
+	if final.ContainerID != "ctr-abc" && final.ContainerID != "ctr-def" {
+		t.Errorf("unexpected container ID: %s", final.ContainerID)
+	}
+	// Release may succeed or fail depending on timing; either is acceptable
+	if releaseErr != nil {
+		t.Logf("release returned error (may be ok): %v", releaseErr)
 	}
 }
 

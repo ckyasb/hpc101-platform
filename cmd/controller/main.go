@@ -1,23 +1,14 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"hpc101-platform/controller"
 )
-
-// memStore is replaced by controller.NewSerializedStore() for production.
-type memStore map[string]*controller.Lease
-
-func (m memStore) LookupByPrincipal(p string) (*controller.Lease, error) {
-	return m[p], nil
-}
-func (m memStore) UpsertLease(l *controller.Lease) error {
-	m[l.Owner] = l
-	return nil
-}
 
 func main() {
 	endpoint := os.Getenv("HPC101_RUNTIME_ENDPOINT")
@@ -29,7 +20,17 @@ func main() {
 		log.Fatalf("controller: runtime adapter: %v", err)
 	}
 	sub := newSubmissionService()
-	h := controller.NewHandler(memStore{}, rt, sub)
+	store := controller.NewSerializedStore()
+	h := controller.NewHandler(store, rt, sub)
+
+	interval := 30 * time.Second
+	if v := os.Getenv("HPC101_RELEASE_TRIGGER_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			interval = d
+		}
+	}
+	controller.StartReleaseTriggers(context.Background(), store, rt, interval)
+
 	log.Println("controller listening on :8080")
 	if err := http.ListenAndServe(":8080", h); err != nil {
 		log.Fatalf("controller: %v", err)

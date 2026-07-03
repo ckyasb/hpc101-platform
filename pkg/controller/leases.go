@@ -50,6 +50,11 @@ type ContainerCreator interface {
 	StopService(containerID string) error
 }
 
+// BastionDrainer is called during release to reject new SSH and terminate channels.
+type BastionDrainer interface {
+	Drain(principal string) error
+}
+
 // SubmissionService is the interface for submitting solutions for judging.
 type SubmissionService interface {
 	Submit(ctx context.Context, problemID string, files map[string][]byte) (string, error)

@@ -26,16 +26,10 @@ func runMaxLifeTrigger(ctx context.Context, store LeaseStoreWithList, rt Contain
 			return
 		case <-ticker.C:
 			for _, l := range store.AllLeases() {
-				if l.State == lease.StateActive && l.IsExpired() {
-					l.Release(lease.TriggerMaxLife)
-					l.ExecuteRelease(func(state lease.ReleaseState) error {
-						if state == lease.StateStopped && rt != nil {
-							return rt.StopService(l.ContainerID)
-						}
-						return nil
-					})
-					store.UpsertLease(l)
+				if l.State != lease.StateActive || !l.IsExpired() {
+					continue
 				}
+				releaseWithRecovery(l, lease.TriggerMaxLife, rt, store)
 			}
 		}
 	}
@@ -50,17 +44,30 @@ func runIdleTrigger(ctx context.Context, store LeaseStoreWithList, rt ContainerC
 			return
 		case <-ticker.C:
 			for _, l := range store.AllLeases() {
-				if l.State == lease.StateActive && l.IsIdle() {
-					l.Release(lease.TriggerIdle)
-					l.ExecuteRelease(func(state lease.ReleaseState) error {
-						if state == lease.StateStopped && rt != nil {
-							return rt.StopService(l.ContainerID)
-						}
-						return nil
-					})
-					store.UpsertLease(l)
+				if l.State != lease.StateActive || !l.IsIdle() {
+					continue
 				}
+				releaseWithRecovery(l, lease.TriggerIdle, rt, store)
 			}
 		}
 	}
+}
+
+func releaseWithRecovery(l *Lease, trigger lease.Trigger, rt ContainerCreator, store LeaseStore) {
+	if !l.Release(trigger) {
+		return
+	}
+	if err := l.ExecuteRelease(func(state lease.ReleaseState) error {
+		if state == lease.StateStopped && rt != nil {
+			return rt.StopService(l.ContainerID)
+		}
+		return nil
+	}); err != nil {
+		l.State = lease.StateActive
+		l.ReleasedBy = ""
+		l.ReleasedAt = time.Time{}
+		store.UpsertLease(l)
+		return
+	}
+	store.UpsertLease(l)
 }
