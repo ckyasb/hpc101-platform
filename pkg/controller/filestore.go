@@ -1,3 +1,14 @@
+// File: pkg/controller/filestore.go
+// Package: controller
+// Created: 2026-07-03
+// Author: hpc101-platform contributors
+// Purpose: JSON-file-backed persistent store for the hpc101-platform controller.
+//          Implements LeaseStore, KeyStore, problem mapping, submission
+//          persistence, and ReleaseOps so it can replace serializedStore in
+//          production deployments that require state to survive restart.
+// Change Summary: Atomic snapshot writes (tmp+rename), load-on-start,
+//                 rollback on save failure for MapProblem.
+
 package controller
 
 import (
@@ -152,8 +163,20 @@ func (fs *FileStore) GetKey(principal string) (string, error) {
 func (fs *FileStore) MapProblem(course, contest, platformID, csojID string) error {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
-	fs.data.ProblemMap[course+":"+contest+":"+platformID] = csojID
-	return fs.unsafeSaveLocked()
+	key := course + ":" + contest + ":" + platformID
+	// Preserve previous value for rollback on save failure.
+	prev, hadPrev := fs.data.ProblemMap[key]
+	fs.data.ProblemMap[key] = csojID
+	if err := fs.unsafeSaveLocked(); err != nil {
+		// Roll back to previous state.
+		if hadPrev {
+			fs.data.ProblemMap[key] = prev
+		} else {
+			delete(fs.data.ProblemMap, key)
+		}
+		return err
+	}
+	return nil
 }
 
 func (fs *FileStore) ResolveProblem(course, contest, platformID string) string {

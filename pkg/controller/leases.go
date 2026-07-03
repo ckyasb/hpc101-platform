@@ -346,7 +346,7 @@ func (h *Handler) handleRelease(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"invalid principal"}`, http.StatusBadRequest)
 		return
 	}
-	s, ok := h.store.(*serializedStore)
+	s, ok := h.store.(ReleaseOps)
 	if !ok {
 		http.Error(w, `{"error":"store does not support release"}`, http.StatusInternalServerError)
 		return
@@ -410,8 +410,11 @@ func (h *Handler) handleProblemSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Persist the mapping.
-	mapper.MapProblem(req.Course, req.Contest, req.ProblemID, csojID)
+	// Persist the mapping; fail if save fails.
+	if err := mapper.MapProblem(req.Course, req.Contest, req.ProblemID, csojID); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"save mapping: %s"}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)

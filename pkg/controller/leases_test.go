@@ -1190,3 +1190,71 @@ func TestHandlerRestartPreservesKey(t *testing.T) {
 		t.Fatalf("get key after restart: %d: %s", rec2.Code, rec2.Body.String())
 	}
 }
+
+// Round 16: MapProblem save error propagation
+
+type errorMapStore struct {
+	*serializedStore
+	mapErr error
+}
+
+func (e *errorMapStore) MapProblem(course, contest, platformID, csojID string) error {
+	if e.mapErr != nil {
+		return e.mapErr
+	}
+	return e.serializedStore.MapProblem(course, contest, platformID, csojID)
+}
+
+func TestProblemSyncMapProblemError(t *testing.T) {
+	s := &errorMapStore{
+		serializedStore: NewSerializedStore(),
+		mapErr:          fmt.Errorf("disk full"),
+	}
+	fs := &fakeProblemSync{csojID: "c1--p1"}
+	h := NewHandlerWithOpts(s, nil, nil, HandlerOpts{ProblemSync: fs})
+	body := `{"course":"cs101","contest":"c1","problem_id":"p1","title":"P1"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/problems/sync", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500 on MapProblem error, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// Round 16: Release works with FileStore
+
+func TestReleaseWithFileStore(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := tmpDir + "/state.json"
+	fs, err := NewFileStore(path)
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+
+	// Create a lease for alice.
+	l := lease.NewLease("alice", "ctr-1", "svc-alice", "10.0.0.1", 2222, 8*time.Hour, 30*time.Minute)
+	if err := fs.UpsertLease(l); err != nil {
+		t.Fatalf("UpsertLease: %v", err)
+	}
+
+	rt := &fakeRuntime{}
+	h := NewHandler(fs, rt, nil)
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/release?principal=alice", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	// Verify container was stopped.
+	if rt.stoppedContainerID != "ctr-1" {
+		t.Errorf("container not stopped: %s", rt.stoppedContainerID)
+	}
+	// Verify lease state advanced to Reclaimed.
+	final, _ := fs.LookupByPrincipal("alice")
+	if final == nil || final.State != lease.StateReclaimed {
+		t.Errorf("lease state: %v", final)
+	}
+}
