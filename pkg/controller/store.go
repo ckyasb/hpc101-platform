@@ -116,6 +116,10 @@ func (s *serializedStore) SaveSubmission(rec *SubmissionRecord) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cpy := *rec
+	if len(rec.Result.Containers) > 0 {
+		cpy.Result.Containers = make([]ContainerInfo, len(rec.Result.Containers))
+		copy(cpy.Result.Containers, rec.Result.Containers)
+	}
 	s.submissions[rec.ID] = &cpy
 	return nil
 }
@@ -129,6 +133,10 @@ func (s *serializedStore) GetSubmission(id string) (*SubmissionRecord, error) {
 		return nil, fmt.Errorf("submission %s not found", id)
 	}
 	cpy := *r
+	if len(r.Result.Containers) > 0 {
+		cpy.Result.Containers = make([]ContainerInfo, len(r.Result.Containers))
+		copy(cpy.Result.Containers, r.Result.Containers)
+	}
 	return &cpy, nil
 }
 
@@ -149,15 +157,15 @@ func (s *serializedStore) AllSubmissions() []*SubmissionRecord {
 }
 
 // MapProblem stores the CSOJ problem ID for a course+platform problem.
-func (s *serializedStore) MapProblem(course, platformID, csojID string) {
+func (s *serializedStore) MapProblem(course, contest, platformID, csojID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.problemMap[course+":"+platformID] = csojID
+	s.problemMap[course+":"+contest+":"+platformID] = csojID
 }
 
 // ResolveProblem returns the mapped CSOJ problem ID, or empty if not found.
-func (s *serializedStore) ResolveProblem(course, platformID string) string {
+func (s *serializedStore) ResolveProblem(course, contest, platformID string) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.problemMap[course+":"+platformID]
+	return s.problemMap[course+":"+contest+":"+platformID]
 }

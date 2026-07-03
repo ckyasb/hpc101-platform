@@ -23,7 +23,7 @@ func TestE2ECourseFlow(t *testing.T) {
 	sub := &fakeSubmission{}
 	store := NewSerializedStore()
 	// Pre-populate problem mapping so submit resolves correctly.
-	store.MapProblem("cs101", "hw1", "cs101--hw1")
+	store.MapProblem("cs101", "c1", "hw1", "cs101--hw1")
 	h := NewHandler(store, rt, sub)
 
 	principal := "e2e-student"
@@ -64,7 +64,7 @@ func TestE2ECourseFlow(t *testing.T) {
 
 	// Step 3: Submit a solution
 	submitBody := fmt.Sprintf(`{"problem_id":"%s","files":{"main.c":"%s"}}`, problemID, "aW50IG1haW4oKXtyZXR1cm4gMDt9")
-	submitReq := httptest.NewRequest(http.MethodPost, "/api/v1/submissions?course=cs101", strings.NewReader(submitBody))
+	submitReq := httptest.NewRequest(http.MethodPost, "/api/v1/submissions?course=cs101&contest=c1", strings.NewReader(submitBody))
 	submitReq.Header.Set("Content-Type", "application/json")
 	submitRec := httptest.NewRecorder()
 	h.ServeHTTP(submitRec, submitReq)

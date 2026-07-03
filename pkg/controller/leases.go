@@ -457,21 +457,22 @@ func (h *Handler) handleSubmissions(w http.ResponseWriter, r *http.Request) {
 	// Track the submission for later result retrieval.
 	principal := r.URL.Query().Get("principal")
 	course := r.URL.Query().Get("course")
+	contest := r.URL.Query().Get("contest")
 
-	// Require course for problem resolution. Reject unmapped problems.
-	if course == "" {
-		http.Error(w, `{"error":"course query parameter is required for submissions"}`, http.StatusBadRequest)
+	// Require course and contest for problem resolution. Reject unmapped problems.
+	if course == "" || contest == "" {
+		http.Error(w, `{"error":"course and contest query parameters are required for submissions"}`, http.StatusBadRequest)
 		return
 	}
-	mappedID := req.ProblemID
-	if resolver, ok := h.store.(interface{ ResolveProblem(string, string) string }); ok {
-		mid := resolver.ResolveProblem(course, req.ProblemID)
-		if mid != "" {
-			mappedID = mid
-		} else {
-			http.Error(w, `{"error":"problem not mapped for this course; sync problem first"}`, http.StatusNotFound)
-			return
-		}
+	resolver, hasResolver := h.store.(interface{ ResolveProblem(string, string, string) string })
+	if !hasResolver {
+		http.Error(w, `{"error":"store does not support problem mapping"}`, http.StatusInternalServerError)
+		return
+	}
+	mappedID := resolver.ResolveProblem(course, contest, req.ProblemID)
+	if mappedID == "" {
+		http.Error(w, `{"error":"problem not mapped for this course/contest; sync problem first"}`, http.StatusNotFound)
+		return
 	}
 	id, err := h.submission.Submit(r.Context(), mappedID, files)
 	if err != nil {
@@ -595,16 +596,26 @@ func (h *Handler) handleSubmissionLogs(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"submission not found or has no containers"}`, http.StatusNotFound)
 		return
 	}
+	// If no containers are cached, query the adapter once for the latest result.
+	if len(rec.Result.Containers) == 0 && h.submission != nil {
+		if result, err := h.submission.QueryResult(r.Context(), id); err == nil {
+			rec.Result = *result
+			if s, ok2 := h.store.(interface{ SaveSubmission(*SubmissionRecord) error }); ok2 {
+				_ = s.SaveSubmission(rec)
+			}
+		}
+	}
+	if len(rec.Result.Containers) == 0 {
+		http.Error(w, `{"error":"submission has no containers yet; retry later"}`, http.StatusConflict)
+		return
+	}
+
 	// Stream logs via the adapter if it supports it.
 	type logStreamer interface {
 		StreamLogs(ctx context.Context, submissionID, containerID string, cb func(stream, data string) error) error
 	}
 	if streamer, ok := interface{}(h.submission).(logStreamer); ok {
-		// Use real CSOJ container ID if available, fall back to submission ID.
-		containerID := rec.Result.SubmissionID
-		if len(rec.Result.Containers) > 0 {
-			containerID = rec.Result.Containers[0].ID
-		}
+		containerID := rec.Result.Containers[0].ID
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
 		flusher, _ := w.(http.Flusher)

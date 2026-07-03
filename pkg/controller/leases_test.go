@@ -202,10 +202,10 @@ func TestSubmitHandlerSuccess(t *testing.T) {
 	f := &fakeSubmission{}
 	s := NewSerializedStore()
 	// Pre-populate problem mapping so submit resolves correctly.
-	s.MapProblem("cs101", "p1", "cs101--p1")
+	s.MapProblem("cs101", "c1", "p1", "cs101--p1")
 	h := NewHandler(s, nil, f)
 	body := `{"problem_id":"p1","files":{"main.c":"aW50IG1haW4oKXt9"}}`
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/submissions?course=cs101", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/submissions?course=cs101&contest=c1", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -232,9 +232,9 @@ func TestSubmitHandlerSuccess(t *testing.T) {
 
 func TestSubmitHandlerMissingService(t *testing.T) {
 	s := NewSerializedStore()
-	s.MapProblem("cs101", "p1", "cs101--p1")
+	s.MapProblem("cs101", "c1", "p1", "cs101--p1")
 	h := NewHandler(s, nil, nil)
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/submissions?course=cs101", strings.NewReader(`{"problem_id":"p1","files":{"a":"b"}}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/submissions?course=cs101&contest=c1", strings.NewReader(`{"problem_id":"p1","files":{"a":"b"}}`))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusServiceUnavailable {
@@ -244,10 +244,10 @@ func TestSubmitHandlerMissingService(t *testing.T) {
 
 func TestSubmitHandlerEmptyInputs(t *testing.T) {
 	s := NewSerializedStore()
-	s.MapProblem("cs101", "p1", "cs101--p1")
+	s.MapProblem("cs101", "c1", "p1", "cs101--p1")
 	h := NewHandler(s, nil, &fakeSubmission{})
 	for _, body := range []string{`{"problem_id":"","files":{"a":"b"}}`, `{"problem_id":"p1","files":{}}`} {
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/submissions?course=cs101", strings.NewReader(body))
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/submissions?course=cs101&contest=c1", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
@@ -260,9 +260,9 @@ func TestSubmitHandlerEmptyInputs(t *testing.T) {
 func TestSubmitHandlerServiceError(t *testing.T) {
 	f := &fakeSubmission{err: fmt.Errorf("CSOJ unavailable")}
 	s := NewSerializedStore()
-	s.MapProblem("cs101", "p1", "cs101--p1")
+	s.MapProblem("cs101", "c1", "p1", "cs101--p1")
 	h := NewHandler(s, nil, f)
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/submissions?course=cs101", strings.NewReader(`{"problem_id":"p1","files":{"a":"YQ=="}}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/submissions?course=cs101&contest=c1", strings.NewReader(`{"problem_id":"p1","files":{"a":"YQ=="}}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -273,9 +273,9 @@ func TestSubmitHandlerServiceError(t *testing.T) {
 
 func TestSubmitHandlerMalformedJSON(t *testing.T) {
 	s := NewSerializedStore()
-	s.MapProblem("cs101", "p1", "cs101--p1")
+	s.MapProblem("cs101", "c1", "p1", "cs101--p1")
 	h := NewHandler(s, nil, &fakeSubmission{})
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/submissions?course=cs101", strings.NewReader(`not json`))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/submissions?course=cs101&contest=c1", strings.NewReader(`not json`))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
@@ -285,9 +285,9 @@ func TestSubmitHandlerMalformedJSON(t *testing.T) {
 
 func TestSubmitHandlerBadBase64(t *testing.T) {
 	s := NewSerializedStore()
-	s.MapProblem("cs101", "p1", "cs101--p1")
+	s.MapProblem("cs101", "c1", "p1", "cs101--p1")
 	h := NewHandler(s, nil, &fakeSubmission{})
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/submissions?course=cs101", strings.NewReader(`{"problem_id":"p1","files":{"a":"!!!"}}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/submissions?course=cs101&contest=c1", strings.NewReader(`{"problem_id":"p1","files":{"a":"!!!"}}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -298,9 +298,9 @@ func TestSubmitHandlerBadBase64(t *testing.T) {
 
 func TestSubmitHandlerEmptyFileName(t *testing.T) {
 	s := NewSerializedStore()
-	s.MapProblem("cs101", "p1", "cs101--p1")
+	s.MapProblem("cs101", "c1", "p1", "cs101--p1")
 	h := NewHandler(s, nil, &fakeSubmission{})
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/submissions?course=cs101", strings.NewReader(`{"problem_id":"p1","files":{"":"YQ=="}}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/submissions?course=cs101&contest=c1", strings.NewReader(`{"problem_id":"p1","files":{"":"YQ=="}}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -311,9 +311,9 @@ func TestSubmitHandlerEmptyFileName(t *testing.T) {
 
 func TestSubmitHandlerWhitespaceProblemID(t *testing.T) {
 	s := NewSerializedStore()
-	s.MapProblem("cs101", "p1", "cs101--p1")
+	s.MapProblem("cs101", "c1", "p1", "cs101--p1")
 	h := NewHandler(s, nil, &fakeSubmission{})
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/submissions?course=cs101", strings.NewReader(`{"problem_id":"   ","files":{"a":"YQ=="}}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/submissions?course=cs101&contest=c1", strings.NewReader(`{"problem_id":"   ","files":{"a":"YQ=="}}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -324,9 +324,9 @@ func TestSubmitHandlerWhitespaceProblemID(t *testing.T) {
 
 func TestSubmitHandlerMethodRejection(t *testing.T) {
 	s := NewSerializedStore()
-	s.MapProblem("cs101", "p1", "cs101--p1")
+	s.MapProblem("cs101", "c1", "p1", "cs101--p1")
 	h := NewHandler(s, nil, &fakeSubmission{})
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/submissions?course=cs101", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/submissions?course=cs101&contest=c1", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusMethodNotAllowed {
@@ -744,7 +744,7 @@ func TestSubmitHandlerRejectsUnmappedProblem(t *testing.T) {
 	// No mapping for p1 -> should be rejected
 	h := NewHandler(s, nil, &fakeSubmission{})
 	body := `{"problem_id":"p1","files":{"a":"YQ=="}}`
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/submissions?course=cs101", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/submissions?course=cs101&contest=c1", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)

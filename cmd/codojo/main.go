@@ -81,7 +81,7 @@ func usage() {
 		"  up <image> [course] [problem]",
 		"  ssh-info", "  release",
 		"  problem", "  score",
-		"  submit <problem-id> <file>...",
+		"  submit <course> <contest> <problem-id> <file>...",
 		"  logs <submission-id>",
 		"  score [submission-id]",
 	} {
@@ -326,11 +326,14 @@ type submitReq struct {
 }
 
 func submit(args []string) {
-	if len(args) < 2 {
-		fatal("usage: submit <problem-id> <file>...")
+	if len(args) < 4 {
+		fatal("usage: submit <course> <contest> <problem-id> <file>...")
 	}
-	req := submitReq{ProblemID: args[0], Files: map[string]string{}}
-	for _, fp := range args[1:] {
+	course := args[0]
+	contest := args[1]
+	problemID := args[2]
+	req := submitReq{ProblemID: problemID, Files: map[string]string{}}
+	for _, fp := range args[3:] {
 		data, err := os.ReadFile(fp)
 		if err != nil {
 			fatal("read %s: %v", fp, err)
@@ -341,7 +344,7 @@ func submit(args []string) {
 	if err != nil {
 		fatal("marshal: %v", err)
 	}
-	resp, err := http.Post(getControllerURL()+"/api/v1/submissions", "application/json", strings.NewReader(string(body)))
+	resp, err := http.Post(getControllerURL()+"/api/v1/submissions?course="+url.QueryEscape(course)+"&contest="+url.QueryEscape(contest), "application/json", strings.NewReader(string(body)))
 	if err != nil {
 		fatal("POST submit: %v", err)
 	}
