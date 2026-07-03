@@ -66,6 +66,12 @@ spec:
               name: http
               protocol: TCP
           securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+            runAsNonRoot: true
+            runAsUser: 1000
+            readOnlyRootFilesystem: true
           env:
             - name: HPC101_RUNTIME_ENDPOINT
               value: "tcp://podman-runtime.hpc101-runtime.svc.cluster.local:2375"
@@ -76,12 +82,6 @@ spec:
                 secretKeyRef:
                   name: csoj-jwt
                   key: token
-            allowPrivilegeEscalation: false
-            capabilities:
-              drop: [ALL]
-            runAsNonRoot: true
-            runAsUser: 1000
-            readOnlyRootFilesystem: true
           resources:
             requests:
               cpu: "50m"
