@@ -239,6 +239,10 @@ func (h *Handler) handleSubmissions(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
 		return
 	}
+	if req.ProblemID == "" || len(req.Files) == 0 {
+		http.Error(w, `{"error":"problem_id and files are required"}`, http.StatusBadRequest)
+		return
+	}
 	files := make(map[string][]byte)
 	for name, b64 := range req.Files {
 		data, err := base64.StdEncoding.DecodeString(b64)

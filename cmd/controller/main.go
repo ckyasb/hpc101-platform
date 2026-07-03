@@ -29,7 +29,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("controller: runtime adapter: %v", err)
 	}
-	h := controller.NewHandler(memStore{}, rt, nil)
+	sub := newSubmissionService()
+	h := controller.NewHandler(memStore{}, rt, sub)
 	log.Println("controller listening on :8080")
 	if err := http.ListenAndServe(":8080", h); err != nil {
 		log.Fatalf("controller: %v", err)

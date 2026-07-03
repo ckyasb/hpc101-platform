@@ -13,3 +13,7 @@ import (
 func newRuntimeAdapter(endpoint string) (controller.ContainerCreator, error) {
 	return nil, fmt.Errorf("runtime requires go >= 1.25 (build with golang:1.25-alpine)")
 }
+
+func newSubmissionService() controller.SubmissionService {
+	return nil
+}
