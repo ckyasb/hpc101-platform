@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -220,26 +221,40 @@ func showScores() {
 	}
 }
 
+type submitReq struct {
+	ProblemID string            `json:"problem_id"`
+	Files     map[string]string `json:"files"`
+}
+
 func submit(args []string) {
 	if len(args) < 2 {
 		fatal("usage: submit <problem-id> <file>...")
 	}
-	problemID := args[0]
+	req := submitReq{ProblemID: args[0], Files: map[string]string{}}
 	for _, fp := range args[1:] {
 		data, err := os.ReadFile(fp)
 		if err != nil {
 			fatal("read %s: %v", fp, err)
 		}
-		body := fmt.Sprintf(`{"problem_id":"%s","file_name":"%s","content":"%s"}`,
-			problemID, fp, string(data))
-		resp, err := http.Post(getControllerURL()+"/api/v1/submissions", "application/json", strings.NewReader(body))
-		if err != nil {
-			fatal("POST submit: %v", err)
-		}
-		defer resp.Body.Close()
-		b, _ := io.ReadAll(resp.Body)
-		fmt.Printf("submitted %s: %s\n", fp, b)
+		req.Files[fp] = base64.StdEncoding.EncodeToString(data)
 	}
+	body, err := json.Marshal(req)
+	if err != nil {
+		fatal("marshal: %v", err)
+	}
+	resp, err := http.Post(getControllerURL()+"/api/v1/submissions", "application/json", strings.NewReader(string(body)))
+	if err != nil {
+		fatal("POST submit: %v", err)
+	}
+	defer resp.Body.Close()
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		fatal("read response: %v", err)
+	}
+	if resp.StatusCode >= 300 {
+		fatal("submit failed: %s", b)
+	}
+	fmt.Printf("submitted: %s\n", b)
 }
 
 func fatal(format string, args ...interface{}) {

@@ -4,6 +4,7 @@
 package controller
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -47,16 +48,22 @@ type ContainerCreator interface {
 	CreateService(req CreateServiceRequest) (*ServiceResult, error)
 }
 
+// SubmissionService is the interface for submitting solutions for judging.
+type SubmissionService interface {
+	Submit(problemID string, files map[string][]byte) (string, error)
+}
+
 // Handler serves the controller HTTP API.
 type Handler struct {
-	store   LeaseStore
-	runtime ContainerCreator
-	mux     *http.ServeMux
+	store      LeaseStore
+	runtime    ContainerCreator
+	submission SubmissionService
+	mux        *http.ServeMux
 }
 
 // NewHandler creates a controller API handler.
-func NewHandler(store LeaseStore, runtime ContainerCreator) *Handler {
-	h := &Handler{store: store, runtime: runtime, mux: http.NewServeMux()}
+func NewHandler(store LeaseStore, runtime ContainerCreator, submission SubmissionService) *Handler {
+	h := &Handler{store: store, runtime: runtime, submission: submission, mux: http.NewServeMux()}
 	h.mux.HandleFunc("/api/v1/leases", h.handleLeases)
 	h.mux.HandleFunc("/api/v1/services", h.handleCreateService)
 	h.mux.HandleFunc("/api/v1/release", h.handleRelease)
@@ -198,11 +205,19 @@ func (h *Handler) handleRelease(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleProblems(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{"problems": []interface{}{}})
 }
 
 func (h *Handler) handleScores(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{"scores": []interface{}{}})
 }
@@ -212,7 +227,33 @@ func (h *Handler) handleSubmissions(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 		return
 	}
+	if h.submission == nil {
+		http.Error(w, `{"error":"submission service not configured"}`, http.StatusServiceUnavailable)
+		return
+	}
+	var req struct {
+		ProblemID string            `json:"problem_id"`
+		Files     map[string]string `json:"files"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
+		return
+	}
+	files := make(map[string][]byte)
+	for name, b64 := range req.Files {
+		data, err := base64.StdEncoding.DecodeString(b64)
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"bad base64 for %s"}`, name), http.StatusBadRequest)
+			return
+		}
+		files[name] = data
+	}
+	id, err := h.submission.Submit(req.ProblemID, files)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
-	json.NewEncoder(w).Encode(map[string]string{"status": "submitted"})
+	json.NewEncoder(w).Encode(map[string]string{"submission_id": id, "status": "submitted"})
 }

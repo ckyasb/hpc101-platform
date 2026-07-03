@@ -42,7 +42,7 @@ func (f *fakeRuntime) CreateService(req CreateServiceRequest) (*ServiceResult, e
 func TestHandleLeasesActive(t *testing.T) {
 	l := lease.NewLease("student-42", "abc", "svc-student-42", "10.0.0.5", 2222, 8*time.Hour, 30*time.Minute)
 	store := memStore{"student-42": l}
-	h := NewHandler(store, nil)
+	h := NewHandler(store, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/leases?principal=student-42", nil)
 	rec := httptest.NewRecorder()
@@ -65,7 +65,7 @@ func TestHandleLeasesActive(t *testing.T) {
 }
 
 func TestHandleLeasesRejectsInjection(t *testing.T) {
-	h := NewHandler(memStore{}, nil)
+	h := NewHandler(memStore{}, nil, nil)
 
 	for _, p := range []string{
 		"student;rm",
@@ -87,7 +87,7 @@ func TestHandleLeasesRejectsInjection(t *testing.T) {
 func TestCreateServiceWritesActiveLease(t *testing.T) {
 	rt := &fakeRuntime{}
 	store := memStore{}
-	h := NewHandler(store, rt)
+	h := NewHandler(store, rt, nil)
 
 	body := `{"principal":"student-42","image":"hpc101-platform/container:latest","ssh_key":"ssh-rsa AAA...","course":"cs101","problem":"hw1"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/services", strings.NewReader(body))
@@ -128,7 +128,7 @@ func TestCreateServiceWritesActiveLease(t *testing.T) {
 
 func TestCreateServiceRejectsEmptyFields(t *testing.T) {
 	rt := &fakeRuntime{}
-	h := NewHandler(memStore{}, rt)
+	h := NewHandler(memStore{}, rt, nil)
 
 	for _, body := range []string{
 		`{"principal":"s1","image":"","ssh_key":"k","course":"c","problem":"p"}`,
@@ -147,7 +147,7 @@ func TestCreateServiceRejectsEmptyFields(t *testing.T) {
 }
 
 func TestHandleLeasesNoActiveLease(t *testing.T) {
-	h := NewHandler(memStore{}, nil)
+	h := NewHandler(memStore{}, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/leases?principal=nobody", nil)
 	rec := httptest.NewRecorder()
