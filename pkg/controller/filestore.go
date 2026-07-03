@@ -285,14 +285,20 @@ func (fs *FileStore) ReleaseLeaseIf(principal string, trigger lease.Trigger, sho
 
 // CreateLeaseForPrincipal is the store-owned atomic create path for FileStore.
 // Same semantics as serializedStore.CreateLeaseForPrincipal but persists to disk.
-func (fs *FileStore) CreateLeaseForPrincipal(principal string, create func() (*ServiceResult, error), buildLease func(*ServiceResult) *Lease) (*Lease, *ServiceResult, error) {
+func (fs *FileStore) CreateLeaseForPrincipal(principal string, create func() (*ServiceResult, error), buildLease func(*ServiceResult) *Lease, cleanup func(*ServiceResult) error) (*Lease, *ServiceResult, error) {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 
 	// Reject if principal already has a non-terminal lease.
 	existing, ok := fs.data.Leases[principal]
 	if ok && existing != nil && existing.State != lease.StateReclaimed {
-		return nil, nil, fmt.Errorf("principal %s already has a %s lease", principal, existing.State)
+		return nil, nil, &ErrLeaseConflict{Principal: principal, State: existing.State}
+	}
+
+	// Snapshot prior state for rollback.
+	var priorLease *Lease
+	if ok && existing != nil {
+		priorLease = existing
 	}
 
 	// Reserve with placeholder.
@@ -302,7 +308,12 @@ func (fs *FileStore) CreateLeaseForPrincipal(principal string, create func() (*S
 	// Call runtime to create container (lock held).
 	result, err := create()
 	if err != nil {
-		delete(fs.data.Leases, principal)
+		// Runtime failed — restore prior state.
+		if priorLease != nil {
+			fs.data.Leases[principal] = priorLease
+		} else {
+			delete(fs.data.Leases, principal)
+		}
 		return nil, nil, err
 	}
 
@@ -310,6 +321,22 @@ func (fs *FileStore) CreateLeaseForPrincipal(principal string, create func() (*S
 	l := buildLease(result)
 	cpy := *l
 	fs.data.Leases[principal] = &cpy
-	_ = fs.unsafeSaveLocked()
+
+	// Persist to disk. If save fails, call cleanup to stop the container
+	// and restore prior state.
+	if saveErr := fs.unsafeSaveLocked(); saveErr != nil {
+		// Stop the just-created container.
+		if cleanup != nil {
+			_ = cleanup(result)
+		}
+		// Restore prior state.
+		if priorLease != nil {
+			fs.data.Leases[principal] = priorLease
+		} else {
+			delete(fs.data.Leases, principal)
+		}
+		return nil, nil, fmt.Errorf("filestore: persist lease for %s: %w", principal, saveErr)
+	}
+
 	return l, result, nil
 }

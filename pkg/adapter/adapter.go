@@ -46,11 +46,11 @@ func isRetryable(err error) bool {
 	}
 	var csjErr *CSOJError
 	if errors.As(err, &csjErr) {
-		// Retry on 5xx server errors and transport failures (HTTPStatus 0).
+		// Retry ONLY on 5xx server errors and transport failures (HTTPStatus 0).
 		return csjErr.HTTPStatus >= 500 || csjErr.HTTPStatus == 0
 	}
-	// Transport errors (no HTTPStatus) are retryable.
-	return true
+	// PolicyError, parse errors, request construction errors: NOT retryable.
+	return false
 }
 
 // retryWithBackoff executes fn up to maxRetries times with exponential backoff.
@@ -263,7 +263,15 @@ func (c *Client) Submit(ctx context.Context, req SubmitRequest) (string, error) 
 
 		env, err := validateEnvelope(http.MethodPost, fmt.Sprintf("problems/%s/submit", req.ProblemID), resp, body)
 		if err != nil {
-			return err // validateEnvelope returns *CSOJError; isRetryable will decide
+			// Map ban/disallowed/forbidden to PolicyError (non-retryable).
+			var csjErr *CSOJError
+			if errors.As(err, &csjErr) && csjErr.HTTPStatus >= 400 && csjErr.HTTPStatus < 500 {
+				msg := strings.ToLower(csjErr.Message)
+				if strings.Contains(msg, "ban") || strings.Contains(msg, "disallowed") || strings.Contains(msg, "forbidden") {
+					return &PolicyError{Code: csjErr.Code, Message: csjErr.Message}
+				}
+			}
+			return err // CSOJError — isRetryable will decide
 		}
 
 		var data struct {

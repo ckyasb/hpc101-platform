@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -27,14 +28,24 @@ type LeaseStore interface {
 	UpsertLease(l *Lease) error
 }
 
+// ErrLeaseConflict is returned when a principal already has a non-terminal lease.
+type ErrLeaseConflict struct {
+	Principal string
+	State     lease.ReleaseState
+}
+
+func (e *ErrLeaseConflict) Error() string {
+	return fmt.Sprintf("principal %s already has a %s lease", e.Principal, e.State)
+}
+
 // LeaseCreator is the store-owned create path that serializes up/release
 // per principal. It holds the store lock while checking existing state,
 // reserving the principal, calling the runtime to create the container,
 // and storing the resulting lease. If the runtime fails, the reservation
-// is rolled back. If the store fails after runtime creation, the container
-// is stopped and the reservation is rolled back.
+// is rolled back. If the store fails after runtime creation, cleanup is
+// called to stop the container and the reservation is rolled back.
 type LeaseCreator interface {
-	CreateLeaseForPrincipal(principal string, create func() (*ServiceResult, error), buildLease func(*ServiceResult) *Lease) (*Lease, *ServiceResult, error)
+	CreateLeaseForPrincipal(principal string, create func() (*ServiceResult, error), buildLease func(*ServiceResult) *Lease, cleanup func(*ServiceResult) error) (*Lease, *ServiceResult, error)
 }
 
 // CreateServiceRequest carries the parameters to create a student service.
@@ -309,32 +320,11 @@ func (h *Handler) handleCreateService(w http.ResponseWriter, r *http.Request) {
 	// principal, calling the runtime, and storing the resulting lease.
 	creator, ok := h.store.(LeaseCreator)
 	if !ok {
-		// Fallback: stores without LeaseCreator use the old lookup-then-create path.
-		existing, err := h.store.LookupByPrincipal(req.Principal)
-		if err != nil {
-			http.Error(w, `{"error":"lease lookup failed"}`, http.StatusInternalServerError)
-			return
-		}
-		if existing != nil && existing.State == lease.StateActive {
-			http.Error(w, `{"error":"principal already has an active lease; release first"}`, http.StatusConflict)
-			return
-		}
-		result, err := h.runtime.CreateService(req)
-		if err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
-			return
-		}
-		l := lease.NewLease(req.Principal, result.ContainerID,
-			"svc-"+req.Principal, result.Host, result.Port, 8*time.Hour, 30*time.Minute)
-		if err := h.store.UpsertLease(l); err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
-			return
-		}
-		h.writeServiceResponse(w, req, result, l)
+		http.Error(w, `{"error":"store does not support atomic lease creation"}`, http.StatusInternalServerError)
 		return
 	}
 
-	// Store-owned atomic create path.
+	// Store-owned atomic create path with cleanup callback.
 	rt := h.runtime
 	_, result, err := creator.CreateLeaseForPrincipal(req.Principal,
 		func() (*ServiceResult, error) {
@@ -344,10 +334,14 @@ func (h *Handler) handleCreateService(w http.ResponseWriter, r *http.Request) {
 			return lease.NewLease(req.Principal, res.ContainerID,
 				"svc-"+req.Principal, res.Host, res.Port, 8*time.Hour, 30*time.Minute)
 		},
+		func(res *ServiceResult) error {
+			return rt.StopService(res.ContainerID)
+		},
 	)
 	if err != nil {
-		// Distinguish "already has lease" (409) from runtime failures (500).
-		if strings.Contains(err.Error(), "already has a") {
+		// Use typed error for conflict detection.
+		var conflict *ErrLeaseConflict
+		if errors.As(err, &conflict) {
 			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusConflict)
 		} else {
 			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)

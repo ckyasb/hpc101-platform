@@ -73,7 +73,7 @@ func TestHandleLeasesActive(t *testing.T) {
 }
 
 func TestHandleLeasesRejectsInjection(t *testing.T) {
-	h := NewHandler(memStore{}, nil, nil)
+	h := NewHandler(NewSerializedStore(), nil, nil)
 
 	for _, p := range []string{
 		"student;rm",
@@ -94,7 +94,7 @@ func TestHandleLeasesRejectsInjection(t *testing.T) {
 
 func TestCreateServiceWritesActiveLease(t *testing.T) {
 	rt := &fakeRuntime{}
-	store := memStore{}
+	store := NewSerializedStore()
 	h := NewHandler(store, rt, nil)
 
 	body := `{"principal":"student-42","image":"hpc101-platform/container:latest","ssh_key":"ssh-rsa AAA...","course":"cs101","problem":"hw1"}`
@@ -136,7 +136,7 @@ func TestCreateServiceWritesActiveLease(t *testing.T) {
 
 func TestCreateServiceRejectsEmptyFields(t *testing.T) {
 	rt := &fakeRuntime{}
-	h := NewHandler(memStore{}, rt, nil)
+	h := NewHandler(NewSerializedStore(), rt, nil)
 
 	for _, body := range []string{
 		`{"principal":"s1","image":"","ssh_key":"k","course":"c","problem":"p"}`,
@@ -155,7 +155,7 @@ func TestCreateServiceRejectsEmptyFields(t *testing.T) {
 }
 
 func TestHandleLeasesNoActiveLease(t *testing.T) {
-	h := NewHandler(memStore{}, nil, nil)
+	h := NewHandler(NewSerializedStore(), nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/leases?principal=nobody", nil)
 	rec := httptest.NewRecorder()
@@ -1012,7 +1012,7 @@ func TestProblemSyncAdapterError(t *testing.T) {
 }
 
 func TestProblemSyncNoMappingStore(t *testing.T) {
-	// memStore does not implement MapProblem
+	// memStore does not implement MapProblem — tests the 500 error path.
 	fs := &fakeProblemSync{}
 	h := NewHandlerWithOpts(memStore{}, nil, nil, HandlerOpts{ProblemSync: fs})
 	body := `{"course":"cs101","contest":"c1","problem_id":"hw1","title":"HW1"}`

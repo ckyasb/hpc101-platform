@@ -121,14 +121,20 @@ func (s *serializedStore) ReleaseLeaseIf(principal string, trigger lease.Trigger
 //
 // This prevents the TOCTOU race where a concurrent up could pass the
 // existing-lease check between Lookup and Upsert.
-func (s *serializedStore) CreateLeaseForPrincipal(principal string, create func() (*ServiceResult, error), buildLease func(*ServiceResult) *Lease) (*Lease, *ServiceResult, error) {
+func (s *serializedStore) CreateLeaseForPrincipal(principal string, create func() (*ServiceResult, error), buildLease func(*ServiceResult) *Lease, cleanup func(*ServiceResult) error) (*Lease, *ServiceResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	// Step 1: reject if principal already has a non-terminal lease.
 	existing, ok := s.leases[principal]
 	if ok && existing != nil && existing.State != lease.StateReclaimed {
-		return nil, nil, fmt.Errorf("principal %s already has a %s lease", principal, existing.State)
+		return nil, nil, &ErrLeaseConflict{Principal: principal, State: existing.State}
+	}
+
+	// Snapshot prior state for rollback.
+	var priorLease *Lease
+	if ok && existing != nil {
+		priorLease = existing
 	}
 
 	// Step 2: reserve the principal with a placeholder to block concurrent up.
@@ -141,8 +147,12 @@ func (s *serializedStore) CreateLeaseForPrincipal(principal string, create func(
 	// Step 3: call the runtime to create the container (lock held).
 	result, err := create()
 	if err != nil {
-		// Step 5a: runtime failed — remove placeholder.
-		delete(s.leases, principal)
+		// Runtime failed — restore prior state or remove placeholder.
+		if priorLease != nil {
+			s.leases[principal] = priorLease
+		} else {
+			delete(s.leases, principal)
+		}
 		return nil, nil, err
 	}
 
@@ -150,6 +160,7 @@ func (s *serializedStore) CreateLeaseForPrincipal(principal string, create func(
 	l := buildLease(result)
 	cpy := *l
 	s.leases[principal] = &cpy
+	// Note: serializedStore is in-memory, no save can fail.
 	return l, result, nil
 }
 
