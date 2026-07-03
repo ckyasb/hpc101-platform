@@ -4,11 +4,14 @@
 # short-lived SSH certificates and forwards (ssh -J / ProxyJump) to
 # the student's allocated container sshd.
 #
-# Certificates carry critical options:
-#   permitopen="<container_host>:<port>" — single TCP target binding
-#   force-command="/bin/false"         — no interactive shell on bastion
+# Certificates carry the critical option:
+#   force-command="/bin/false" — no interactive shell on bastion
 #
-# Per plan AC-2: bastion has no shell, no gateway-ports, cert-only auth.
+# Container target binding is enforced by AuthorizedPrincipalsCommand
+# (permitopen is valid as an sshd/authorized_keys option, not a cert option).
+#
+# Per plan AC-2: bastion has no shell, no raw pubkey, no gateway-ports,
+# cert-only auth via TrustedUserCAKeys.
 # VSCode Remote-SSH works with ProxyJump configured in ~/.ssh/config.
 ---
 apiVersion: v1
@@ -92,6 +95,8 @@ spec:
               mountPath: /usr/local/bin/bastion-principals
               subPath: bastion-principals.sh
               readOnly: true
+            - name: run
+              mountPath: /run/sshd
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
@@ -132,6 +137,7 @@ spec:
         - name: ssh-host-key
           secret:
             secretName: bastion-host-key
+            defaultMode: 0600
             items:
               - key: ssh_host_ed25519_key
                 path: ssh_host_ed25519_key
@@ -139,6 +145,8 @@ spec:
           configMap:
             name: bastion-principals-script
             defaultMode: 0555
+        - name: run
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -155,7 +163,7 @@ data:
     PasswordAuthentication no
     ChallengeResponseAuthentication no
     AuthorizedKeysFile none
-    AuthorizedPrincipalsCommand /usr/local/bin/bastion-principals %u
+    AuthorizedPrincipalsCommand /usr/local/bin/bastion-principals %i
     AuthorizedPrincipalsCommandUser nobody
     LogLevel VERBOSE
     AllowTcpForwarding yes

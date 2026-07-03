@@ -1,17 +1,18 @@
 // Package sshca provides SSH Certificate Authority operations for the
 // hpc101-platform bastion. Generates and loads Ed25519 CA keys, signs
-// short-lived user certificates with per-student container binding.
+// short-lived user certificates with per-student identity.
 //
-// Certificates carry critical options that restrict the user to their
-// allocated container only:
-//   - permitopen="<host>:<port>"  → single TCP forwarding target
+// Certificates carry the valid OpenSSH critical option:
 //   - force-command="/bin/false"  → no interactive shell on bastion
 //
-// The bastion's sshd_config trusts this CA (TrustedUserCAKeys) and
-// enforces cert-only authentication. Students use:
-//   ssh -J bastion user@container-host -p <port>
+// Container target binding is NOT in the certificate (permitopen is
+// not a valid user-cert option). It is enforced by the bastion's
+// AuthorizedPrincipalsCommand, which returns permitopen=host:port.
 //
-// VSCode Remote-SSH works with ProxyJump configured in ~/.ssh/config.
+// The bastion's sshd_config trusts this CA (TrustedUserCAKeys),
+// disables raw authorized_keys (AuthorizedKeysFile none), and enforces
+// cert-only authentication. Students use:
+//   ssh -J bastion user@container-host -p <port>
 package sshca
 
 import (

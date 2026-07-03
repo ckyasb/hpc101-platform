@@ -5,10 +5,10 @@
 # Usage:
 #   docker build -f deploy/bastion/Dockerfile -t hpc101-platform/bastion:latest .
 FROM alpine:3.21
-RUN apk add --no-cache openssh-server openssh-keygen && \
+RUN apk add --no-cache openssh-server openssh-keygen curl jq && \
     ssh-keygen -A && \
     adduser -D -s /bin/false bastion && \
-    mkdir -p /run/sshd /etc/ssh && \
+    mkdir -p /run/sshd && \
     chown bastion:bastion /run/sshd
 COPY deploy/bastion/sshd_config /etc/ssh/sshd_config
 EXPOSE 2222

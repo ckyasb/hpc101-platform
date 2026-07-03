@@ -195,15 +195,15 @@ func main() {
 			if err != nil {
 				msg := err.Error()
 				if strings.Contains(msg, "deadline") || strings.Contains(msg, "canceled") {
-					fmt.Printf("  [PASS] Timeout correctly canceled after %v\n", 2*time.Second)
+					fmt.Printf("  [PASS] Timeout correctly canceled after 2s: %s\n", msg)
 					passed++
 				} else {
-					fmt.Printf("  [PASS] Container exited/timeout: %v\n", msg)
-					passed++
+					failf("ContainerWait error is not a timeout: %s", msg)
+					failed++
 				}
 			} else {
-				fmt.Printf("  [PASS] Container exited before timeout\n")
-				passed++
+				failf("ContainerWait nil error before timeout (unexpected)")
+				failed++
 			}
 		}
 		cli.ContainerRemove(context.Background(), shortCtr.ID, container.RemoveOptions{Force: true})

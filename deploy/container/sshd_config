@@ -1,0 +1,21 @@
+# Per-container sshd config for student environments.
+# Runs on port 2222, allows SSH + scp/sftp/port forwarding.
+# Authorized keys injected by controller via mount or env.
+Port 2222
+ListenAddress 0.0.0.0
+Protocol 2
+HostKey /etc/ssh/ssh_host_ed25519_key
+PubkeyAuthentication yes
+PasswordAuthentication no
+ChallengeResponseAuthentication no
+AuthorizedKeysFile /etc/ssh/authorized_keys/%u /home/student/.ssh/authorized_keys
+AllowTcpForwarding yes
+X11Forwarding no
+AllowAgentForwarding yes
+PermitTTY yes
+LogLevel VERBOSE
+MaxSessions 10
+ClientAliveInterval 60
+ClientAliveCountMax 3
+UseDNS no
+PrintMotd no
