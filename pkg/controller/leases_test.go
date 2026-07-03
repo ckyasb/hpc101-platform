@@ -200,17 +200,20 @@ func (f *fakeSubmission) QueryResult(ctx context.Context, submissionID string) (
 
 func TestSubmitHandlerSuccess(t *testing.T) {
 	f := &fakeSubmission{}
-	h := NewHandler(memStore{}, nil, f)
+	s := NewSerializedStore()
+	// Pre-populate problem mapping so submit resolves correctly.
+	s.MapProblem("cs101", "p1", "cs101--p1")
+	h := NewHandler(s, nil, f)
 	body := `{"problem_id":"p1","files":{"main.c":"aW50IG1haW4oKXt9"}}`
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/submissions", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/submissions?course=cs101", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("expected 202, got %d: %s", rec.Code, rec.Body.String())
 	}
-	if f.lastProblemID != "p1" {
-		t.Errorf("problem_id: %s", f.lastProblemID)
+	if f.lastProblemID != "cs101--p1" {
+		t.Errorf("problem_id: %s (expected mapped ID)", f.lastProblemID)
 	}
 	// Assert decoded file content
 	if string(f.lastFiles["main.c"]) != "int main(){}" {
@@ -228,8 +231,10 @@ func TestSubmitHandlerSuccess(t *testing.T) {
 }
 
 func TestSubmitHandlerMissingService(t *testing.T) {
-	h := NewHandler(memStore{}, nil, nil)
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/submissions", strings.NewReader(`{"problem_id":"p1","files":{"a":"b"}}`))
+	s := NewSerializedStore()
+	s.MapProblem("cs101", "p1", "cs101--p1")
+	h := NewHandler(s, nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/submissions?course=cs101", strings.NewReader(`{"problem_id":"p1","files":{"a":"b"}}`))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusServiceUnavailable {
@@ -238,9 +243,11 @@ func TestSubmitHandlerMissingService(t *testing.T) {
 }
 
 func TestSubmitHandlerEmptyInputs(t *testing.T) {
-	h := NewHandler(memStore{}, nil, &fakeSubmission{})
+	s := NewSerializedStore()
+	s.MapProblem("cs101", "p1", "cs101--p1")
+	h := NewHandler(s, nil, &fakeSubmission{})
 	for _, body := range []string{`{"problem_id":"","files":{"a":"b"}}`, `{"problem_id":"p1","files":{}}`} {
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/submissions", strings.NewReader(body))
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/submissions?course=cs101", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
@@ -252,8 +259,10 @@ func TestSubmitHandlerEmptyInputs(t *testing.T) {
 
 func TestSubmitHandlerServiceError(t *testing.T) {
 	f := &fakeSubmission{err: fmt.Errorf("CSOJ unavailable")}
-	h := NewHandler(memStore{}, nil, f)
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/submissions", strings.NewReader(`{"problem_id":"p1","files":{"a":"YQ=="}}`))
+	s := NewSerializedStore()
+	s.MapProblem("cs101", "p1", "cs101--p1")
+	h := NewHandler(s, nil, f)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/submissions?course=cs101", strings.NewReader(`{"problem_id":"p1","files":{"a":"YQ=="}}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -263,8 +272,10 @@ func TestSubmitHandlerServiceError(t *testing.T) {
 }
 
 func TestSubmitHandlerMalformedJSON(t *testing.T) {
-	h := NewHandler(memStore{}, nil, &fakeSubmission{})
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/submissions", strings.NewReader(`not json`))
+	s := NewSerializedStore()
+	s.MapProblem("cs101", "p1", "cs101--p1")
+	h := NewHandler(s, nil, &fakeSubmission{})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/submissions?course=cs101", strings.NewReader(`not json`))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
@@ -273,8 +284,10 @@ func TestSubmitHandlerMalformedJSON(t *testing.T) {
 }
 
 func TestSubmitHandlerBadBase64(t *testing.T) {
-	h := NewHandler(memStore{}, nil, &fakeSubmission{})
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/submissions", strings.NewReader(`{"problem_id":"p1","files":{"a":"!!!"}}`))
+	s := NewSerializedStore()
+	s.MapProblem("cs101", "p1", "cs101--p1")
+	h := NewHandler(s, nil, &fakeSubmission{})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/submissions?course=cs101", strings.NewReader(`{"problem_id":"p1","files":{"a":"!!!"}}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -284,8 +297,10 @@ func TestSubmitHandlerBadBase64(t *testing.T) {
 }
 
 func TestSubmitHandlerEmptyFileName(t *testing.T) {
-	h := NewHandler(memStore{}, nil, &fakeSubmission{})
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/submissions", strings.NewReader(`{"problem_id":"p1","files":{"":"YQ=="}}`))
+	s := NewSerializedStore()
+	s.MapProblem("cs101", "p1", "cs101--p1")
+	h := NewHandler(s, nil, &fakeSubmission{})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/submissions?course=cs101", strings.NewReader(`{"problem_id":"p1","files":{"":"YQ=="}}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -295,8 +310,10 @@ func TestSubmitHandlerEmptyFileName(t *testing.T) {
 }
 
 func TestSubmitHandlerWhitespaceProblemID(t *testing.T) {
-	h := NewHandler(memStore{}, nil, &fakeSubmission{})
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/submissions", strings.NewReader(`{"problem_id":"   ","files":{"a":"YQ=="}}`))
+	s := NewSerializedStore()
+	s.MapProblem("cs101", "p1", "cs101--p1")
+	h := NewHandler(s, nil, &fakeSubmission{})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/submissions?course=cs101", strings.NewReader(`{"problem_id":"   ","files":{"a":"YQ=="}}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -306,8 +323,10 @@ func TestSubmitHandlerWhitespaceProblemID(t *testing.T) {
 }
 
 func TestSubmitHandlerMethodRejection(t *testing.T) {
-	h := NewHandler(memStore{}, nil, &fakeSubmission{})
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/submissions", nil)
+	s := NewSerializedStore()
+	s.MapProblem("cs101", "p1", "cs101--p1")
+	h := NewHandler(s, nil, &fakeSubmission{})
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/submissions?course=cs101", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusMethodNotAllowed {
@@ -556,9 +575,13 @@ func TestReleaseServiceDown(t *testing.T) {
 
 
 type fakeDiscovery struct {
-	containers []DiscoveryContainer
-	volumes    []DiscoveryVolume
-	networks   []DiscoveryNetwork
+	containers      []DiscoveryContainer
+	volumes         []DiscoveryVolume
+	networks        []DiscoveryNetwork
+	removedVolumes  []string
+	removedNetworks []string
+	removeVolErr    error
+	removeNetErr    error
 }
 
 func (f *fakeDiscovery) ListContainers(labels map[string]string) ([]DiscoveryContainer, error) {
@@ -571,6 +594,18 @@ func (f *fakeDiscovery) ListVolumes(labels map[string]string) ([]DiscoveryVolume
 
 func (f *fakeDiscovery) ListNetworks(labels map[string]string) ([]DiscoveryNetwork, error) {
 	return f.networks, nil
+}
+
+func (f *fakeDiscovery) RemoveVolume(ctx context.Context, name string) error {
+	if f.removeVolErr != nil { return f.removeVolErr }
+	f.removedVolumes = append(f.removedVolumes, name)
+	return nil
+}
+
+func (f *fakeDiscovery) RemoveNetwork(ctx context.Context, id string) error {
+	if f.removeNetErr != nil { return f.removeNetErr }
+	f.removedNetworks = append(f.removedNetworks, id)
+	return nil
 }
 
 func TestReattachLeases(t *testing.T) {
@@ -702,4 +737,73 @@ func TestReattachNetworkDiscovery(t *testing.T) {
 	if result.OrphanNetworks != 1 {
 		t.Errorf("orphan networks: expected 1, got %d", result.OrphanNetworks)
 	}
+}
+
+func TestSubmitHandlerRejectsUnmappedProblem(t *testing.T) {
+	s := NewSerializedStore()
+	// No mapping for p1 -> should be rejected
+	h := NewHandler(s, nil, &fakeSubmission{})
+	body := `{"problem_id":"p1","files":{"a":"YQ=="}}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/submissions?course=cs101", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for unmapped problem, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestSubmitHandlerRequiresCourse(t *testing.T) {
+	h := NewHandler(NewSerializedStore(), nil, &fakeSubmission{})
+	body := `{"problem_id":"p1","files":{"a":"YQ=="}}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/submissions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for missing course, got %d", rec.Code)
+	}
+}
+
+func TestReattachReclaimsWithCleaner(t *testing.T) {
+	s := NewSerializedStore()
+	d := &fakeDiscovery{
+		containers: []DiscoveryContainer{
+			{ID: "c1", Name: "svc-alice", Host: "h", Port: 22, Labels: map[string]string{"platform.io/kind": "service", "platform.io/owner": "alice"}},
+		},
+		volumes: []DiscoveryVolume{
+			{Name: "svc-orphan-1", Driver: "local", Labels: map[string]string{"platform.io/kind": "service", "platform.io/owner": "bob"}},
+		},
+		networks: []DiscoveryNetwork{
+			{ID: "n1", Name: "svc-orphan-net", Driver: "bridge", Labels: map[string]string{"platform.io/kind": "service", "platform.io/owner": "bob"}},
+		},
+	}
+	result, err := ReattachLeases(s, d)
+	if err != nil { t.Fatalf("ReattachLeases: %v", err) }
+	if result.ReclaimedVolumes != 1 { t.Errorf("ReclaimedVolumes: expected 1, got %d", result.ReclaimedVolumes) }
+	if result.ReclaimedNets != 1 { t.Errorf("ReclaimedNets: expected 1, got %d", result.ReclaimedNets) }
+	if len(d.removedVolumes) != 1 || d.removedVolumes[0] != "svc-orphan-1" {
+		t.Errorf("removedVolumes: %v", d.removedVolumes)
+	}
+	if len(d.removedNetworks) != 1 || d.removedNetworks[0] != "n1" {
+		t.Errorf("removedNetworks: %v", d.removedNetworks)
+	}
+}
+
+func TestReattachCleanupError(t *testing.T) {
+	s := NewSerializedStore()
+	d := &fakeDiscovery{
+		containers: []DiscoveryContainer{
+			{ID: "c1", Name: "svc-alice", Host: "h", Port: 22, Labels: map[string]string{"platform.io/kind": "service", "platform.io/owner": "alice"}},
+		},
+		volumes: []DiscoveryVolume{
+			{Name: "svc-orphan-1", Driver: "local", Labels: map[string]string{"platform.io/kind": "service", "platform.io/owner": "bob"}},
+		},
+		removeVolErr: fmt.Errorf("volume busy"),
+	}
+	result, err := ReattachLeases(s, d)
+	if err != nil { t.Fatalf("ReattachLeases: %v", err) }
+	// Cleanup error should not block reattach; counts are still incremented
+	if result.OrphanVolumes != 1 { t.Errorf("OrphanVolumes: %d", result.OrphanVolumes) }
+	if result.ReclaimedVolumes != 0 { t.Errorf("ReclaimedVolumes with error: %d", result.ReclaimedVolumes) }
 }

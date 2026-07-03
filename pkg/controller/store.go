@@ -138,7 +138,12 @@ func (s *serializedStore) AllSubmissions() []*SubmissionRecord {
 	defer s.mu.Unlock()
 	result := make([]*SubmissionRecord, 0, len(s.submissions))
 	for _, r := range s.submissions {
-		result = append(result, r)
+		cpy := *r
+		if len(r.Result.Containers) > 0 {
+			cpy.Result.Containers = make([]ContainerInfo, len(r.Result.Containers))
+			copy(cpy.Result.Containers, r.Result.Containers)
+		}
+		result = append(result, &cpy)
 	}
 	return result
 }

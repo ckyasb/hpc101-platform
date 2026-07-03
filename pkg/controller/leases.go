@@ -458,13 +458,19 @@ func (h *Handler) handleSubmissions(w http.ResponseWriter, r *http.Request) {
 	principal := r.URL.Query().Get("principal")
 	course := r.URL.Query().Get("course")
 
-	// Resolve platform problem ID to CSOJ problem ID via mapping.
+	// Require course for problem resolution. Reject unmapped problems.
+	if course == "" {
+		http.Error(w, `{"error":"course query parameter is required for submissions"}`, http.StatusBadRequest)
+		return
+	}
 	mappedID := req.ProblemID
-	if course != "" {
-		if resolver, ok := h.store.(interface{ ResolveProblem(string, string) string }); ok {
-			if mid := resolver.ResolveProblem(course, req.ProblemID); mid != "" {
-				mappedID = mid
-			}
+	if resolver, ok := h.store.(interface{ ResolveProblem(string, string) string }); ok {
+		mid := resolver.ResolveProblem(course, req.ProblemID)
+		if mid != "" {
+			mappedID = mid
+		} else {
+			http.Error(w, `{"error":"problem not mapped for this course; sync problem first"}`, http.StatusNotFound)
+			return
 		}
 	}
 	id, err := h.submission.Submit(r.Context(), mappedID, files)
@@ -511,16 +517,30 @@ func (h *Handler) handleSubmissionByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Return data from our tracking store (fast path) or query adapter.
+	// Load record from memory or store.
 	h.mu.Lock()
 	rec, ok := h.submissions[id]
-	if ok && rec.Result.Status != "" && rec.Result.Status != "Queued" && rec.Result.Status != "Running" {
-		h.mu.Unlock()
+	h.mu.Unlock()
+	if !ok {
+		if s, ok2 := h.store.(interface{ GetSubmission(string) (*SubmissionRecord, error) }); ok2 {
+			r, err := s.GetSubmission(id)
+			if err == nil {
+				rec = r
+				ok = true
+			}
+		}
+	}
+	if !ok {
+		http.Error(w, `{"error":"submission not found"}`, http.StatusNotFound)
+		return
+	}
+
+	// Return cached terminal result without re-querying.
+	if rec.Result.Status != "" && rec.Result.Status != "Queued" && rec.Result.Status != "Running" {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(rec.Result)
 		return
 	}
-	h.mu.Unlock()
 
 	// Query the adapter for current status.
 	if h.submission != nil {
@@ -529,14 +549,12 @@ func (h *Handler) handleSubmissionByID(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
 			return
 		}
+		// Update both memory and store.
+		rec.Result = *result
 		h.mu.Lock()
-		if ok {
-			h.submissions[id].Result = *result
-		}
+		h.submissions[id] = rec
 		h.mu.Unlock()
-		// Persist updated result to store.
-		if s, ok := h.store.(interface{ SaveSubmission(*SubmissionRecord) error }); ok {
-			rec.Result = *result
+		if s, ok2 := h.store.(interface{ SaveSubmission(*SubmissionRecord) error }); ok2 {
 			_ = s.SaveSubmission(rec)
 		}
 		w.Header().Set("Content-Type", "application/json")

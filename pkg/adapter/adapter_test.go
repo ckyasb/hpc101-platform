@@ -208,7 +208,7 @@ func TestSyncProblemCreate(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := NewClient(srv.URL, "tok")
-	err := c.SyncProblem(context.Background(), ContestRecord{ContestID: "c1", ProblemID: "p1", Title: "T"})
+	_, err := c.SyncProblem(context.Background(), ContestRecord{ContestID: "c1", ProblemID: "p1", Title: "T"})
 	if err != nil {
 		t.Fatalf("SyncProblem: %v", err)
 	}
@@ -227,7 +227,7 @@ func TestSyncProblemUpdate(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := NewClient(srv.URL, "tok")
-	err := c.SyncProblem(context.Background(), ContestRecord{ContestID: "c1", ProblemID: "p1", Title: "T"})
+	_, err := c.SyncProblem(context.Background(), ContestRecord{ContestID: "c1", ProblemID: "p1", Title: "T"})
 	if err != nil {
 		t.Fatalf("SyncProblem: %v", err)
 	}
@@ -247,7 +247,7 @@ func TestSyncProblemGETTransportError(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := NewClient(srv.URL, "tok")
-	err := c.SyncProblem(context.Background(), ContestRecord{ContestID: "c1", ProblemID: "p1", Title: "T"})
+	_, err := c.SyncProblem(context.Background(), ContestRecord{ContestID: "c1", ProblemID: "p1", Title: "T"})
 	if err == nil {
 		t.Fatal("expected error for 500 on GET problem")
 	}
@@ -260,7 +260,7 @@ func TestSyncProblem500WithCodeZero(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := NewClient(srv.URL, "tok")
-	err := c.SyncProblem(context.Background(), ContestRecord{ContestID: "c1", ProblemID: "p1", Title: "T"})
+	_, err := c.SyncProblem(context.Background(), ContestRecord{ContestID: "c1", ProblemID: "p1", Title: "T"})
 	if err == nil {
 		t.Fatal("expected error for HTTP 500 even with code:0")
 	}
@@ -273,7 +273,7 @@ func TestSyncProblemRejectsError(t *testing.T) {
 	defer srv.Close()
 
 	client := NewClient(srv.URL, "x")
-	err := client.SyncProblem(context.Background(), ContestRecord{ContestID: "c1", ProblemID: "dup"})
+	_, err := client.SyncProblem(context.Background(), ContestRecord{ContestID: "c1", ProblemID: "dup"})
 	if err == nil {
 		t.Fatal("expected error")
 	}

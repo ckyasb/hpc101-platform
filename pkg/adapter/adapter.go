@@ -315,12 +315,12 @@ func CSOJProblemID(contestID, platformProblemID string) string {
 
 // SyncProblem ensures the platform problem has a corresponding CSOJ
 // contest/problem record, using a contest-scoped CSOJ problem ID.
-func (c *Client) SyncProblem(ctx context.Context, rec ContestRecord) error {
+func (c *Client) SyncProblem(ctx context.Context, rec ContestRecord) (string, error) {
 	rec.ProblemID = CSOJProblemID(rec.ContestID, rec.ProblemID)
 	if err := c.upsertContest(ctx, rec); err != nil {
-		return err
+		return "", err
 	}
-	return c.upsertProblem(ctx, rec)
+	return rec.ProblemID, c.upsertProblem(ctx, rec)
 }
 
 // doCSOJ sends a JSON request, reads the body, and validates the CSOJ envelope.
@@ -422,19 +422,18 @@ func (c *Client) upsertProblem(ctx context.Context, rec ContestRecord) error {
 		return err
 	}
 
-	// Check if problem exists globally (under a different contest).
+	// Problem is not in the target contest — create it there.
+	// Never PUT a problem that exists under a different contest; that would
+	// silently overwrite another contest's judge configuration.
 	path := "problems/" + url.PathEscape(rec.ProblemID)
 	exists, err := c.getResource(ctx, path)
 	if err != nil {
 		return fmt.Errorf("adapter: check problem %s: %w", rec.ProblemID, err)
 	}
 	if exists {
-		// Problem exists but not in this contest — PUT updates definition only.
-		_, err = c.doCSOJ(ctx, http.MethodPut, path, body)
-	} else {
-		// New problem — create under the target contest.
-		_, err = c.doCSOJ(ctx, http.MethodPost, "contests/"+url.PathEscape(rec.ContestID)+"/problems", body)
+		return fmt.Errorf("adapter: problem %s exists globally but not in contest %s — use a unique platform problem ID", rec.ProblemID, rec.ContestID)
 	}
+	_, err = c.doCSOJ(ctx, http.MethodPost, "contests/"+url.PathEscape(rec.ContestID)+"/problems", body)
 	return err
 }
 
