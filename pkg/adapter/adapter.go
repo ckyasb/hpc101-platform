@@ -270,9 +270,10 @@ func (c *Client) StreamLogs(ctx context.Context, submissionID, containerID strin
 func (c *Client) SyncProblem(ctx context.Context, rec ContestRecord) error {
 	// 1. Ensure contest exists
 	contestPayload := map[string]interface{}{
-		"name":       rec.ContestID,
-		"start_time": rec.StartTime,
-		"end_time":   rec.EndTime,
+		"id":        rec.ContestID,
+		"name":      rec.ContestID,
+		"starttime": rec.StartTime,
+		"endtime":   rec.EndTime,
 	}
 	body, err := json.Marshal(contestPayload)
 	if err != nil {
@@ -289,11 +290,20 @@ func (c *Client) SyncProblem(ctx context.Context, rec ContestRecord) error {
 	if err != nil {
 		return fmt.Errorf("adapter: create contest: %w", err)
 	}
+	respBody, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
+	var env csjResponse
+	if err = json.Unmarshal(respBody, &env); err != nil {
+		return fmt.Errorf("adapter: parse contest response: %w", err)
+	}
+	if env.Code != 0 {
+		return fmt.Errorf("adapter: contest rejected (code=%d): %s", env.Code, env.Message)
+	}
 
-	// 2. Create problem in contest
+	// 2. Create problem (judger.Problem: id, name)
 	probPayload := map[string]interface{}{
-		"title": rec.Title,
+		"id":   rec.ProblemID,
+		"name": rec.Title,
 	}
 	body, err = json.Marshal(probPayload)
 	if err != nil {
@@ -312,12 +322,11 @@ func (c *Client) SyncProblem(ctx context.Context, rec ContestRecord) error {
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err = io.ReadAll(resp.Body)
 	if err != nil {
 		return fmt.Errorf("adapter: read problem response: %w", err)
 	}
-	var env csjResponse
-	if err := json.Unmarshal(respBody, &env); err != nil {
+	if err = json.Unmarshal(respBody, &env); err != nil {
 		return fmt.Errorf("adapter: parse problem response: %w", err)
 	}
 	if env.Code != 0 {

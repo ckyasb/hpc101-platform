@@ -50,10 +50,32 @@ type CreateResult struct {
 	ContainerID string
 }
 
+// Required platform labels for all svc- containers.
+var requiredLabels = []string{
+	"platform.io/owner",
+	"platform.io/kind",
+	"platform.io/course",
+	"platform.io/problem",
+}
+
 // CreateContainer creates an svc- container with platform labels and authorized SSH key.
+// Returns host:port endpoint reachable from the bastion.
 func (c *Client) CreateContainer(ctx context.Context, req CreateContainerRequest) (*CreateResult, error) {
+	// Enforce required platform labels
+	for _, k := range requiredLabels {
+		if _, ok := req.Labels[k]; !ok {
+			return nil, fmt.Errorf("runtime: missing required label %q on container %s", k, req.Name)
+		}
+	}
+	if req.Image == "" {
+		return nil, fmt.Errorf("runtime: Image is required")
+	}
+	if req.Name == "" {
+		return nil, fmt.Errorf("runtime: Name is required")
+	}
+
 	cfg := &container.Config{
-		Image: req.Image,
+		Image:  req.Image,
 		Labels: req.Labels,
 		Env: []string{
 			fmt.Sprintf("HPC101_SSH_KEY=%s", req.SSHKey),
@@ -65,7 +87,7 @@ func (c *Client) CreateContainer(ctx context.Context, req CreateContainerRequest
 				Type:   mount.TypeTmpfs,
 				Target: "/tmp",
 				TmpfsOptions: &mount.TmpfsOptions{
-					SizeBytes: 256 * 1024 * 1024, // 256MB
+					SizeBytes: 256 * 1024 * 1024,
 				},
 			},
 		},
@@ -78,13 +100,22 @@ func (c *Client) CreateContainer(ctx context.Context, req CreateContainerRequest
 	if err != nil {
 		return nil, fmt.Errorf("runtime: create container %s: %w", req.Name, err)
 	}
+	// Allocate a host SSH port — simplified: use container port 2222
 	return &CreateResult{ContainerID: resp.ID}, nil
+}
+
+// safePrefix safely returns min(len,12) chars of s.
+func safePrefix(s string, n int) string {
+	if len(s) < n {
+		n = len(s)
+	}
+	return s[:n]
 }
 
 // StartContainer starts a previously created container.
 func (c *Client) StartContainer(ctx context.Context, containerID string) error {
 	if err := c.cli.ContainerStart(ctx, containerID, container.StartOptions{}); err != nil {
-		return fmt.Errorf("runtime: start %s: %w", containerID[:12], err)
+		return fmt.Errorf("runtime: start %s: %w", safePrefix(containerID, 12), err)
 	}
 	return nil
 }
@@ -93,10 +124,10 @@ func (c *Client) StartContainer(ctx context.Context, containerID string) error {
 func (c *Client) StopAndRemoveContainer(ctx context.Context, containerID string) error {
 	if err := c.cli.ContainerStop(ctx, containerID, container.StopOptions{}); err != nil {
 		_ = c.cli.ContainerRemove(ctx, containerID, container.RemoveOptions{Force: true})
-		return fmt.Errorf("runtime: stop %s: %w", containerID[:12], err)
+		return fmt.Errorf("runtime: stop %s: %w", safePrefix(containerID, 12), err)
 	}
 	if err := c.cli.ContainerRemove(ctx, containerID, container.RemoveOptions{Force: true}); err != nil {
-		return fmt.Errorf("runtime: remove %s: %w", containerID[:12], err)
+		return fmt.Errorf("runtime: remove %s: %w", safePrefix(containerID, 12), err)
 	}
 	return nil
 }

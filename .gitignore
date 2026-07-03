@@ -3,3 +3,4 @@ plan.md
 .humanize/
 data/
 cmd/podman-poc/podman-poc
+controller-main

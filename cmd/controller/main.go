@@ -14,9 +14,13 @@ type memStore map[string]*controller.Lease
 func (m memStore) LookupByPrincipal(p string) (*controller.Lease, error) {
 	return m[p], nil
 }
+func (m memStore) UpsertLease(l *controller.Lease) error {
+	m[l.Owner] = l
+	return nil
+}
 
 func main() {
-	h := controller.NewHandler(memStore{})
+	h := controller.NewHandler(memStore{}, nil)
 	log.Println("controller listening on :8080")
 	if err := http.ListenAndServe(":8080", h); err != nil {
 		log.Fatalf("controller: %v", err)

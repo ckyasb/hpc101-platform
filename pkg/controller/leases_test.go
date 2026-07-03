@@ -13,14 +13,30 @@ import (
 
 type memStore map[string]*lease.Lease
 
-func (m memStore) LookupByPrincipal(p string) (*lease.Lease, error) {
+func (m memStore) LookupByPrincipal(p string) (*Lease, error) {
 	return m[p], nil
 }
+func (m memStore) UpsertLease(l *Lease) error {
+	m[l.Owner] = l
+	return nil
+}
+
+type fakeRuntime struct {
+	lastImage  string
+	lastLabels map[string]string
+}
+
+func (f *fakeRuntime) CreateContainer(owner, image, sshKey string, labels map[string]string) (containerID, host string, port uint16, err error) {
+	f.lastImage = image
+	f.lastLabels = labels
+	return "ctr-" + owner, "10.0.0.5", 2222, nil
+}
+func (f *fakeRuntime) StopAndRemoveContainer(ctx interface{}, containerID string) error { return nil }
 
 func TestHandleLeasesActive(t *testing.T) {
 	l := lease.NewLease("student-42", "abc", "svc-student-42", "10.0.0.5", 2222, 8*time.Hour, 30*time.Minute)
 	store := memStore{"student-42": l}
-	h := NewHandler(store)
+	h := NewHandler(store, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/leases?principal=student-42", nil)
 	rec := httptest.NewRecorder()
@@ -43,7 +59,7 @@ func TestHandleLeasesActive(t *testing.T) {
 }
 
 func TestHandleLeasesRejectsInjection(t *testing.T) {
-	h := NewHandler(memStore{})
+	h := NewHandler(memStore{}, nil)
 
 	for _, p := range []string{
 		"student;rm",
@@ -63,7 +79,7 @@ func TestHandleLeasesRejectsInjection(t *testing.T) {
 }
 
 func TestHandleLeasesNoActiveLease(t *testing.T) {
-	h := NewHandler(memStore{})
+	h := NewHandler(memStore{}, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/leases?principal=nobody", nil)
 	rec := httptest.NewRecorder()

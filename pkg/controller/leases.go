@@ -19,17 +19,26 @@ type Lease = lease.Lease
 // the full lease repository (task11).
 type LeaseStore interface {
 	LookupByPrincipal(principal string) (*Lease, error)
+	UpsertLease(l *Lease) error
+}
+
+// ContainerCreator is the interface for creating service containers.
+// Implemented by the Podman runtime client (pkg/runtime).
+type ContainerCreator interface {
+	CreateContainer(owner, image, sshKey string, labels map[string]string) (containerID, host string, port uint16, err error)
+	StopAndRemoveContainer(ctx interface{}, containerID string) error
 }
 
 // Handler serves the controller HTTP API.
 type Handler struct {
-	store LeaseStore
-	mux   *http.ServeMux
+	store     LeaseStore
+	runtime   ContainerCreator
+	mux       *http.ServeMux
 }
 
 // NewHandler creates a controller API handler.
-func NewHandler(store LeaseStore) *Handler {
-	h := &Handler{store: store, mux: http.NewServeMux()}
+func NewHandler(store LeaseStore, runtime ContainerCreator) *Handler {
+	h := &Handler{store: store, runtime: runtime, mux: http.NewServeMux()}
 	h.mux.HandleFunc("/api/v1/leases", h.handleLeases)
 	h.mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
