@@ -199,11 +199,12 @@ func TestSyncProblemCreate(t *testing.T) {
 	var calls []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls = append(calls, r.Method+" "+r.URL.Path)
-		code := 1 // not found for GET
-		if r.Method != http.MethodGet {
-			code = 0
-		} // success for POST/PUT
-		json.NewEncoder(w).Encode(map[string]interface{}{"code": code})
+		if r.Method == http.MethodGet {
+			w.WriteHeader(404)
+			json.NewEncoder(w).Encode(map[string]interface{}{"code": -1})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"code": 0})
 	}))
 	defer srv.Close()
 	c := NewClient(srv.URL, "tok")

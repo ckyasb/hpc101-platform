@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -54,6 +55,26 @@ type csjResponse struct {
 	Code    int             `json:"code"`
 	Message string          `json:"message"`
 	Data    json.RawMessage `json:"data,omitempty"`
+}
+
+// CSOJError is a structured error from a CSOJ API call.
+type CSOJError struct {
+	Method     string
+	Path       string
+	HTTPStatus int
+	Code       int
+	Message    string
+}
+
+func (e *CSOJError) Error() string {
+	if e.HTTPStatus == 404 {
+		return fmt.Sprintf("adapter: %s %s not found", e.Method, e.Path)
+	}
+	return fmt.Sprintf("adapter: %s %s HTTP %d (code=%d): %s", e.Method, e.Path, e.HTTPStatus, e.Code, e.Message)
+}
+
+func newCSOJError(method, path string, status int, env csjResponse) *CSOJError {
+	return &CSOJError{Method: method, Path: path, HTTPStatus: status, Code: env.Code, Message: env.Message}
 }
 
 // CSOJSONNumber handles CSOJ scores that may be encoded as int or float64.
@@ -291,32 +312,30 @@ func (c *Client) doCSOJ(ctx context.Context, method, path string, body []byte) (
 	if err != nil {
 		return nil, fmt.Errorf("adapter: read %s %s: %w", method, path, err)
 	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("adapter: %s %s HTTP %d", method, path, resp.StatusCode)
-	}
-	var env csjResponse
-	if err := json.Unmarshal(respBody, &env); err != nil {
-		return nil, fmt.Errorf("adapter: parse %s %s HTTP %d: %w", method, path, resp.StatusCode, err)
-	}
-	if env.Code != 0 {
-		return nil, fmt.Errorf("adapter: CSOJ %s %s (code=%d): %s", method, path, env.Code, env.Message)
-	}
+		var env csjResponse
+		if err := json.Unmarshal(respBody, &env); err != nil {
+			return nil, fmt.Errorf("adapter: parse %s %s: %w", method, path, err)
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 || env.Code != 0 {
+			return nil, newCSOJError(method, path, resp.StatusCode, env)
+		}
+		return &env, nil
 	return &env, nil
 }
 
 // getResource returns (true, nil) if the resource exists, (false, nil) for HTTP 404
 // (resource genuinely missing), and (false, error) for transport/5xx/malformed responses.
 func (c *Client) getResource(ctx context.Context, path string) (bool, error) {
-	_, err := c.doCSOJ(ctx, http.MethodGet, path, nil)
-	if err != nil {
-		if strings.Contains(err.Error(), "HTTP 404") || strings.Contains(err.Error(), "CSOJ") {
-			return false, nil // genuine 404 → resource does not exist
+		_, err := c.doCSOJ(ctx, http.MethodGet, path, nil)
+		if err != nil {
+			var csjErr *CSOJError
+			if errors.As(err, &csjErr) && csjErr.HTTPStatus == 404 {
+				return false, nil
+			}
+			return false, err
 		}
-		return false, err // transport, 5xx, auth, or parse failure
+		return true, nil
 	}
-	return true, nil
-}
-
 func (c *Client) upsertContest(ctx context.Context, rec ContestRecord) error {
 	payload := map[string]interface{}{"id": rec.ContestID, "name": rec.ContestID, "starttime": rec.StartTime, "endtime": rec.EndTime}
 	body, _ := json.Marshal(payload)
