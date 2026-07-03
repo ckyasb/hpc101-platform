@@ -1421,7 +1421,7 @@ func TestRestartSubmitScoreLogs(t *testing.T) {
 	}
 	h2 := NewHandlerWithOpts(fs2, nil, sub2, HandlerOpts{})
 
-	// Phase 3: GET submissions/{id} returns terminal result.
+	// Phase 3: GET submissions/{id} returns terminal result and persists it.
 	req2 := httptest.NewRequest(http.MethodGet, "/api/v1/submissions/"+subID, nil)
 	rec2 := httptest.NewRecorder()
 	h2.ServeHTTP(rec2, req2)
@@ -1434,14 +1434,34 @@ func TestRestartSubmitScoreLogs(t *testing.T) {
 		t.Errorf("result: %+v", result)
 	}
 
-	// Phase 4: GET logs/{id} streams with persisted container ID.
+	// Phase 4: SECOND reopen — proves the refreshed result was persisted to the store,
+	// not just held in handler memory. The fake returns an error from QueryResult so
+	// the log endpoint MUST use the persisted container metadata.
+	fs3, err := NewFileStore(path)
+	if err != nil {
+		t.Fatalf("NewFileStore (2nd reopen): %v", err)
+	}
+	sub3 := &fakeLogStreamSubmission{
+		fakeSubmission: fakeSubmission{
+			err: fmt.Errorf("QueryResult must not be called — use persisted data"),
+		},
+	}
+	h3 := NewHandlerWithOpts(fs3, nil, sub3, HandlerOpts{})
+
+	// Phase 5: GET logs/{id} streams using the PERSISTED container ID.
 	req3 := httptest.NewRequest(http.MethodGet, "/api/v1/submissions/logs/"+subID, nil)
 	rec3 := httptest.NewRecorder()
-	h2.ServeHTTP(rec3, req3)
+	h3.ServeHTTP(rec3, req3)
 	if rec3.Code != http.StatusOK {
 		t.Fatalf("GET logs: %d: %s", rec3.Code, rec3.Body.String())
 	}
-	if sub2.lastStreamCtr != "csoj-ctr-1" {
-		t.Errorf("log streamer container ID: got %q, want csoj-ctr-1", sub2.lastStreamCtr)
+	if sub3.lastStreamCtr != "csoj-ctr-1" {
+		t.Errorf("log streamer container ID: got %q, want csoj-ctr-1 (persisted)", sub3.lastStreamCtr)
+	}
+	if sub3.lastStreamSub != subID {
+		t.Errorf("log streamer submission ID: got %q, want %q", sub3.lastStreamSub, subID)
+	}
+	if !strings.Contains(rec3.Body.String(), "log line 1") {
+		t.Errorf("log body missing expected line: %s", rec3.Body.String())
 	}
 }

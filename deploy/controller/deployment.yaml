@@ -58,6 +58,7 @@ spec:
       securityContext:
         seccompProfile:
           type: RuntimeDefault
+        fsGroup: 1000
       containers:
         - name: controller
           image: hpc101-platform/controller:latest

@@ -54,3 +54,31 @@ private key mounted from the `bastion-ca-keys` secret (`ca_key` key).
 The bastion trusts the matching public key (`ca.pub` in the same secret)
 via `TrustedUserCAKeys`. Both must come from the same keypair so that
 certificates signed by the controller are accepted by the bastion.
+
+The `bastion-ca-keys` Secret must exist in **both** namespaces:
+- `hpc101-platform` (controller): contains `ca_key` (PKCS8 PEM) + `ca.pub`
+- `hpc101-bastion` (bastion): contains `ca.pub` only
+
+The controller pod sets `fsGroup: 1000` so the mode-`0440` secret file is
+readable by the non-root controller process (UID 1000).
+
+#### Provisioning
+
+Generate the CA and create both namespace secrets:
+
+```bash
+./deploy/bastion/provision-ca.sh
+```
+
+This creates an Ed25519 keypair in PKCS8 PEM format and populates the
+secrets. Re-running regenerates the CA.
+
+#### Verification
+
+Confirm the controller's `ca_key` matches the bastion's `ca.pub` and that
+a signed cert verifies against the bastion-trusted CA:
+
+```bash
+./deploy/bastion/verify-ca.sh
+```
+
