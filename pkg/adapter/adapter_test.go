@@ -325,3 +325,72 @@ func TestStreamLogsContextCancel(t *testing.T) {
 		t.Error("should have received at least the first frame before cancel")
 	}
 }
+
+// Round 1: Adapter retry tests
+
+func TestAdapterRetryOn5xx(t *testing.T) {
+	// Test that the adapter retries on 5xx and succeeds on a later 200.
+	var callCount int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		if callCount < 3 {
+			w.WriteHeader(http.StatusBadGateway)
+			json.NewEncoder(w).Encode(map[string]interface{}{"code": -1, "message": "upstream error"})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"code": 0, "data": map[string]interface{}{"submission_id": "sub-retry-ok"}})
+	}))
+	defer srv.Close()
+	c := NewClient(srv.URL, "tok")
+	id, err := c.Submit(context.Background(), SubmitRequest{ProblemID: "p1", Files: map[string][]byte{"main.c": []byte("int main(){}")}})
+	if err != nil {
+		t.Fatalf("Submit with retry: %v", err)
+	}
+	if id != "sub-retry-ok" {
+		t.Errorf("expected sub-retry-ok, got %s", id)
+	}
+	if callCount != 3 {
+		t.Errorf("expected 3 attempts (2 retries + 1 success), got %d", callCount)
+	}
+}
+
+func TestAdapterNoRetryOn4xx(t *testing.T) {
+	// 4xx client errors (e.g. disallowed-file ban) should NOT be retried.
+	var callCount int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(map[string]interface{}{"code": -1, "message": "disallowed file"})
+	}))
+	defer srv.Close()
+	c := NewClient(srv.URL, "tok")
+	_, err := c.Submit(context.Background(), SubmitRequest{ProblemID: "p1", Files: map[string][]byte{"main.c": []byte("bad")}})
+	if err == nil {
+		t.Fatal("expected error for 4xx, got nil")
+	}
+	if callCount != 1 {
+		t.Errorf("expected 1 attempt (no retry on 4xx), got %d", callCount)
+	}
+}
+
+func TestAdapterQueryRetryOn5xx(t *testing.T) {
+	var callCount int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		if callCount < 2 {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{"code": -1, "message": "server error"})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"code": 0, "data": map[string]interface{}{"id": "sub-1", "status": "Success"}})
+	}))
+	defer srv.Close()
+	c := NewClient(srv.URL, "tok")
+	sub, err := c.QueryResult(context.Background(), "sub-1")
+	if err != nil {
+		t.Fatalf("QueryResult with retry: %v", err)
+	}
+	if sub.Status != "Success" {
+		t.Errorf("status: %s", sub.Status)
+	}
+}

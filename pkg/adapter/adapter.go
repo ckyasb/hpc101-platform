@@ -27,9 +27,57 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
+
+// maxRetries is the maximum number of retry attempts for transient failures.
+const maxRetries = 3
+
+// retryDelay is the base delay between retry attempts (exponential backoff).
+const retryDelay = 200 * 1000 * 1000 // 200ms in nanoseconds
+
+// isRetryable returns true if the error is a transient transport or 5xx failure.
+// Policy errors (4xx, disallowed-file, ban) are NOT retryable.
+func isRetryable(err error) bool {
+	if err == nil {
+		return false
+	}
+	var csjErr *CSOJError
+	if errors.As(err, &csjErr) {
+		// Retry on 5xx server errors and transport failures (HTTPStatus 0).
+		return csjErr.HTTPStatus >= 500 || csjErr.HTTPStatus == 0
+	}
+	// Transport errors (no HTTPStatus) are retryable.
+	return true
+}
+
+// retryWithBackoff executes fn up to maxRetries times with exponential backoff.
+// Non-retryable errors are returned immediately on first attempt.
+func retryWithBackoff(ctx context.Context, fn func() error) error {
+	var lastErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		lastErr = fn()
+		if lastErr == nil {
+			return nil
+		}
+		if !isRetryable(lastErr) {
+			return lastErr
+		}
+		if attempt < maxRetries {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-timeAfter(retryDelay << uint(attempt)):
+			}
+		}
+	}
+	return lastErr
+}
+
+// timeAfter is a wrapper around time.After for testability.
+var timeAfter = time.After
 
 // csjEncode safely encodes a string for use in a CSOJ problem ID.
 // Uses base64url without padding to produce URL-safe, collision-free identifiers.
@@ -198,29 +246,39 @@ func (c *Client) Submit(ctx context.Context, req SubmitRequest) (string, error) 
 	httpReq.Header.Set("Content-Type", w.FormDataContentType())
 	httpReq.Header.Set("Authorization", "Bearer "+c.credential)
 
-	resp, err := c.httpClient.Do(httpReq)
-	if err != nil {
-		return "", fmt.Errorf("adapter: submit %s: %w", req.ProblemID, err)
-	}
-	defer resp.Body.Close()
+	var submissionID string
+	submitErr := retryWithBackoff(ctx, func() error {
+		// Reset the body for retry.
+		httpReq.Body = io.NopCloser(bytes.NewReader(buf.Bytes()))
+		resp, err := c.httpClient.Do(httpReq)
+		if err != nil {
+			return &CSOJError{Method: http.MethodPost, Path: "problems/" + req.ProblemID + "/submit", HTTPStatus: 0, Message: err.Error()}
+		}
+		defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("adapter: read submit response: %w", err)
-	}
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return &CSOJError{Method: http.MethodPost, Path: "problems/" + req.ProblemID + "/submit", HTTPStatus: resp.StatusCode, Message: err.Error()}
+		}
 
-	env, err := validateEnvelope(http.MethodPost, fmt.Sprintf("problems/%s/submit", req.ProblemID), resp, body)
-	if err != nil {
-		return "", err
-	}
+		env, err := validateEnvelope(http.MethodPost, fmt.Sprintf("problems/%s/submit", req.ProblemID), resp, body)
+		if err != nil {
+			return err // validateEnvelope returns *CSOJError; isRetryable will decide
+		}
 
-	var data struct {
-		SubmissionID string `json:"submission_id"`
+		var data struct {
+			SubmissionID string `json:"submission_id"`
+		}
+		if err := json.Unmarshal(env.Data, &data); err != nil {
+			return fmt.Errorf("adapter: parse submission_id: %w", err) // non-retryable
+		}
+		submissionID = data.SubmissionID
+		return nil
+	})
+	if submitErr != nil {
+		return "", submitErr
 	}
-	if err := json.Unmarshal(env.Data, &data); err != nil {
-		return "", fmt.Errorf("adapter: parse submission_id: %w", err)
-	}
-	return data.SubmissionID, nil
+	return submissionID, nil
 }
 
 // QueryResult reads submission status and result from CSOJ.
@@ -233,27 +291,35 @@ func (c *Client) QueryResult(ctx context.Context, submissionID string) (*Submiss
 	}
 	httpReq.Header.Set("Authorization", "Bearer "+c.credential)
 
-	resp, err := c.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("adapter: query %s: %w", submissionID, err)
-	}
-	defer resp.Body.Close()
+	var result *Submission
+	queryErr := retryWithBackoff(ctx, func() error {
+		resp, err := c.httpClient.Do(httpReq)
+		if err != nil {
+			return &CSOJError{Method: http.MethodGet, Path: "submissions/" + submissionID, HTTPStatus: 0, Message: err.Error()}
+		}
+		defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("adapter: read query response: %w", err)
-	}
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return &CSOJError{Method: http.MethodGet, Path: "submissions/" + submissionID, HTTPStatus: resp.StatusCode, Message: err.Error()}
+		}
 
-	env, err := validateEnvelope(http.MethodGet, fmt.Sprintf("submissions/%s", submissionID), resp, body)
-	if err != nil {
-		return nil, err
-	}
+		env, err := validateEnvelope(http.MethodGet, fmt.Sprintf("submissions/%s", submissionID), resp, body)
+		if err != nil {
+			return err
+		}
 
-	var sub Submission
-	if err := json.Unmarshal(env.Data, &sub); err != nil {
-		return nil, fmt.Errorf("adapter: parse submission data: %w", err)
+		var sub Submission
+		if err := json.Unmarshal(env.Data, &sub); err != nil {
+			return fmt.Errorf("adapter: parse submission data: %w", err)
+		}
+		result = &sub
+		return nil
+	})
+	if queryErr != nil {
+		return nil, queryErr
 	}
-	return &sub, nil
+	return result, nil
 }
 
 // StreamLogs opens a WebSocket connection to stream judge container logs.

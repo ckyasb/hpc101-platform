@@ -1465,3 +1465,51 @@ func TestRestartSubmitScoreLogs(t *testing.T) {
 		t.Errorf("log body missing expected line: %s", rec3.Body.String())
 	}
 }
+
+// Round 1: Up/release serialization tests
+
+func TestCreateServiceRejectsDuplicateActiveLease(t *testing.T) {
+	rt := &fakeRuntime{}
+	s := NewSerializedStore()
+	// Pre-create an active lease for alice.
+	l := lease.NewLease("alice", "ctr-1", "svc-alice", "10.0.0.1", 2222, 8*time.Hour, 30*time.Minute)
+	s.UpsertLease(l)
+	h := NewHandler(s, rt, nil)
+
+	body := `{"principal":"alice","image":"img:1","ssh_key":"ssh-rsa AAA","course":"cs101","problem":"hw1"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/services", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Errorf("expected 409 for duplicate active lease, got %d: %s", rec.Code, rec.Body.String())
+	}
+	// Verify no new container was created.
+	if rt.lastPrincipal == "alice" {
+		t.Error("runtime.CreateService was called despite existing active lease")
+	}
+}
+
+func TestCreateServiceAllowsAfterRelease(t *testing.T) {
+	rt := &fakeRuntime{}
+	s := NewSerializedStore()
+	l := lease.NewLease("alice", "ctr-1", "svc-alice", "10.0.0.1", 2222, 8*time.Hour, 30*time.Minute)
+	s.UpsertLease(l)
+	// Release the lease to Reclaimed state.
+	s.ReleaseLeaseIf("alice", lease.TriggerManual, func(l *Lease) bool { return true }, rt, nil)
+
+	h := NewHandler(s, rt, nil)
+	body := `{"principal":"alice","image":"img:2","ssh_key":"ssh-rsa AAA","course":"cs101","problem":"hw1"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/services", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Errorf("expected 201 after release, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if rt.lastImage != "img:2" {
+		t.Errorf("expected img:2, got %s", rt.lastImage)
+	}
+}

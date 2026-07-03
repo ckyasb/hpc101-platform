@@ -294,6 +294,18 @@ func (h *Handler) handleCreateService(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check for existing active lease before creating a new container.
+	// This serializes up vs concurrent up/release/expiry for the same principal.
+	existing, err := h.store.LookupByPrincipal(req.Principal)
+	if err != nil {
+		http.Error(w, `{"error":"lease lookup failed"}`, http.StatusInternalServerError)
+		return
+	}
+	if existing != nil && existing.State == lease.StateActive {
+		http.Error(w, `{"error":"principal already has an active lease; release first"}`, http.StatusConflict)
+		return
+	}
+
 	result, err := h.runtime.CreateService(req)
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
