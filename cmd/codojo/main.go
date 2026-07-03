@@ -20,7 +20,8 @@ func getControllerURL() string {
 }
 
 type config struct {
-	SSHPublicKey string `json:"ssh_public_key"`
+	SSHPublicKey  string `json:"ssh_public_key"`
+	PrivateKeyPath string `json:"private_key_path"`
 }
 
 func loadConfig() *config {
@@ -85,11 +86,19 @@ func usage() {
 
 func registerKey(args []string) {
 	if len(args) < 1 {
-		fatal("usage: register-key <path>")
+		fatal("usage: register-key <private-key-path>")
 	}
-	d, err := os.ReadFile(args[0])
+	privPath := args[0]
+	var pubPath string
+	if strings.HasSuffix(privPath, ".pub") {
+		pubPath = privPath
+		privPath = strings.TrimSuffix(privPath, ".pub")
+	} else {
+		pubPath = privPath + ".pub"
+	}
+	d, err := os.ReadFile(pubPath)
 	if err != nil {
-		fatal("read key: %v", err)
+		fatal("read public key %s: %v", pubPath, err)
 	}
 	key := strings.TrimSpace(string(d))
 	principal := os.Getenv("USER")
@@ -111,9 +120,9 @@ func registerKey(args []string) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		fatal("mkdir: %v", err)
 	}
-	cfgB, _ := json.MarshalIndent(config{SSHPublicKey: key}, "", "  ")
+	cfgB, _ := json.MarshalIndent(config{SSHPublicKey: key, PrivateKeyPath: privPath}, "", "  ")
 	os.WriteFile(filepath.Join(dir, "config.json"), cfgB, 0600)
-	fmt.Println("key registered with controller")
+	fmt.Printf("key registered with controller (identity: %s)\n", privPath)
 }
 
 func up(args []string) {
@@ -168,6 +177,7 @@ func up(args []string) {
 }
 
 func sshInfo() {
+	cfg := loadConfig()
 	p := url.QueryEscape(os.Getenv("USER"))
 	resp, err := http.Get(getControllerURL() + "/api/v1/ssh-info?principal=" + p)
 	if err != nil {
@@ -178,8 +188,13 @@ func sshInfo() {
 	var r map[string]interface{}
 	json.Unmarshal(b, &r)
 	if resp.StatusCode == 200 {
-		if cfg, ok := r["ssh_config"].(string); ok {
-			fmt.Print(cfg)
+		if sshCfg, ok := r["ssh_config"].(string); ok {
+			if cfg.PrivateKeyPath != "" {
+				sshCfg = strings.Replace(sshCfg,
+					"IdentityFile ~/.hpc101/"+p+"-key",
+					"IdentityFile "+cfg.PrivateKeyPath, 1)
+			}
+			fmt.Print(sshCfg)
 		} else {
 			fmt.Printf("bastion: %s:%v  container: %s:%v  config_dir: %s\n",
 				r["bastion_host"], r["bastion_port"], r["container_host"], r["container_port"], r["config_dir"])

@@ -222,7 +222,7 @@ func TestSyncProblemUpdate(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls = append(calls, r.Method+" "+r.URL.Path)
 		// GET returns found → should PUT; return contest with problem list
-		data := map[string]interface{}{"code": 0, "data": map[string]interface{}{"id": "c1", "problems": []string{"p1"}}}
+		data := map[string]interface{}{"code": 0, "data": map[string]interface{}{"id": "c1", "problems": []string{"c1-p1"}}}
 		json.NewEncoder(w).Encode(data)
 	}))
 	defer srv.Close()

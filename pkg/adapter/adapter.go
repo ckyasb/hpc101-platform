@@ -303,7 +303,14 @@ func (c *Client) StreamLogs(ctx context.Context, submissionID, containerID strin
 // Creates contest via POST /api/v1/contests then
 // problem via POST /api/v1/contests/:contestID/problems.
 // Routes from vendor/csoj/internal/api/admin/router.go:66,72.
+func CSOJProblemID(contestID, platformProblemID string) string {
+	return contestID + "-" + platformProblemID
+}
+
+// SyncProblem ensures the platform problem has a corresponding CSOJ
+// contest/problem record, using a contest-scoped CSOJ problem ID.
 func (c *Client) SyncProblem(ctx context.Context, rec ContestRecord) error {
+	rec.ProblemID = CSOJProblemID(rec.ContestID, rec.ProblemID)
 	if err := c.upsertContest(ctx, rec); err != nil {
 		return err
 	}

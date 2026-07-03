@@ -10,10 +10,33 @@ import (
 type serializedStore struct {
 	mu     sync.Mutex
 	leases map[string]*Lease
+	keys   map[string]string // principal → public key
 }
 
 func NewSerializedStore() *serializedStore {
-	return &serializedStore{leases: make(map[string]*Lease)}
+	return &serializedStore{
+		leases: make(map[string]*Lease),
+		keys:   make(map[string]string),
+	}
+}
+
+// RegisterKey implements KeyStore — persists a public key in the store.
+func (s *serializedStore) RegisterKey(principal, publicKey string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.keys[principal] = publicKey
+	return nil
+}
+
+// GetKey implements KeyStore — retrieves a persisted public key.
+func (s *serializedStore) GetKey(principal string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	k, ok := s.keys[principal]
+	if !ok {
+		return "", fmt.Errorf("no registered key for %s", principal)
+	}
+	return k, nil
 }
 
 // LookupByPrincipal returns a COPY of the lease or nil.

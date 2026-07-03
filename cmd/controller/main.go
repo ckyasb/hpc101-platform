@@ -29,7 +29,13 @@ func main() {
 	} else {
 		log.Printf("reattach: runtime does not support discovery (use go1.25 build)")
 	}
-	drainer := &controller.NoopBastionDrainer{}
+	var drainer controller.BastionDrainer = &controller.NoopBastionDrainer{}
+	if mgmtURL := os.Getenv("HPC101_BASTION_MGMT_URL"); mgmtURL != "" {
+		drainer = controller.NewHTTPBastionDrainer(mgmtURL)
+		log.Printf("controller: bastion drainer wired to %s", mgmtURL)
+	} else {
+		log.Printf("controller: HPC101_BASTION_MGMT_URL not set, using noop drainer")
+	}
 
 	// Load or generate the SSH CA for signing student certificates.
 	var h *controller.Handler
