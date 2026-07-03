@@ -47,15 +47,27 @@ func main() {
 	if caPath == "" {
 		caPath = "ca_key"
 	}
+	var certSigner controller.CertSigner
 	ca, caErr := loadOrGenerateCA(caPath)
 	if caErr != nil {
 		log.Printf("controller: SSH CA: %v — cert signing disabled", caErr)
-		h = controller.NewHandlerWithDrainer(store, rt, sub, drainer)
 	} else {
-		signer := &caAdapter{ca: ca}
+		certSigner = &caAdapter{ca: ca}
 		log.Printf("controller: SSH CA loaded, cert signing enabled")
-		h = controller.NewHandlerWithDrainerAndSigner(store, rt, sub, drainer, signer)
 	}
+
+	// Wire problem sync service.
+	problemSync := newProblemSyncService()
+	if problemSync == nil {
+		log.Printf("controller: problem sync not available (go < 1.25)")
+	} else {
+		log.Printf("controller: problem sync enabled")
+	}
+	h = controller.NewHandlerWithOpts(store, rt, sub, controller.HandlerOpts{
+		Drainer:     drainer,
+		CertSigner:  certSigner,
+		ProblemSync: problemSync,
+	})
 
 	interval := 30 * time.Second
 	if v := os.Getenv("HPC101_RELEASE_TRIGGER_INTERVAL"); v != "" {

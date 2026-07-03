@@ -129,34 +129,36 @@ type Handler struct {
 	mux          *http.ServeMux
 }
 
-// NewHandler creates a controller API handler with no drainer or cert signer.
+// HandlerOpts carries optional services for the controller handler.
+// All fields are optional; nil means the feature is disabled.
+type HandlerOpts struct {
+	Drainer     BastionDrainer
+	CertSigner  CertSigner
+	ProblemSync ProblemSyncService
+}
+
+// NewHandlerWithOpts creates a handler with the given optional services.
+// This is the single production constructor.
+func NewHandlerWithOpts(store LeaseStore, runtime ContainerCreator, submission SubmissionService, opts HandlerOpts) *Handler {
+	return newHandler(store, runtime, submission, opts.Drainer, opts.CertSigner, opts.ProblemSync)
+}
+
+// NewHandler creates a controller API handler with no optional services.
 func NewHandler(store LeaseStore, runtime ContainerCreator, submission SubmissionService) *Handler {
-	return newHandler(store, runtime, submission, nil, nil)
-}
-
-// NewHandlerWithProblemSync creates a handler with problem projection capability.
-func NewHandlerWithProblemSync(store LeaseStore, runtime ContainerCreator, submission SubmissionService, sync ProblemSyncService) *Handler {
-	h := newHandler(store, runtime, submission, nil, nil)
-	h.problemSync = sync
-	return h
-}
-
-// NewHandlerWithCertSigner creates a handler with SSH cert signing capability.
-func NewHandlerWithCertSigner(store LeaseStore, runtime ContainerCreator, submission SubmissionService, signer CertSigner) *Handler {
-	return newHandler(store, runtime, submission, nil, signer)
+	return NewHandlerWithOpts(store, runtime, submission, HandlerOpts{})
 }
 
 // NewHandlerWithDrainer creates a handler with a bastion drainer.
 func NewHandlerWithDrainer(store LeaseStore, runtime ContainerCreator, submission SubmissionService, drainer BastionDrainer) *Handler {
-	return newHandler(store, runtime, submission, drainer, nil)
+	return NewHandlerWithOpts(store, runtime, submission, HandlerOpts{Drainer: drainer})
 }
 
 // NewHandlerWithDrainerAndSigner creates a handler with both drainer and cert signer.
 func NewHandlerWithDrainerAndSigner(store LeaseStore, runtime ContainerCreator, submission SubmissionService, drainer BastionDrainer, signer CertSigner) *Handler {
-	return newHandler(store, runtime, submission, drainer, signer)
+	return NewHandlerWithOpts(store, runtime, submission, HandlerOpts{Drainer: drainer, CertSigner: signer})
 }
 
-func newHandler(store LeaseStore, runtime ContainerCreator, submission SubmissionService, drainer BastionDrainer, signer CertSigner) *Handler {
+func newHandler(store LeaseStore, runtime ContainerCreator, submission SubmissionService, drainer BastionDrainer, signer CertSigner, sync ProblemSyncService) *Handler {
 	var ks KeyStore
 	if kstore, ok := store.(KeyStore); ok {
 		ks = kstore
@@ -170,7 +172,7 @@ func newHandler(store LeaseStore, runtime ContainerCreator, submission Submissio
 		drainer:     drainer,
 		certSigner:  signer,
 		keyStore:    ks,
-		problemSync: nil,
+		problemSync: sync,
 		submissions: make(map[string]*SubmissionRecord),
 		mux:         http.NewServeMux(),
 	}
@@ -389,6 +391,13 @@ func (h *Handler) handleProblemSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Require a mapping-capable store before calling the adapter.
+	mapper, hasMapper := h.store.(interface{ MapProblem(string, string, string, string) })
+	if !hasMapper {
+		http.Error(w, `{"error":"store does not support problem mapping"}`, http.StatusInternalServerError)
+		return
+	}
+
 	csojID, err := h.problemSync.SyncProblem(r.Context(),
 		req.Course, req.Contest, req.ProblemID, req.Title,
 		req.StartTime, req.EndTime,
@@ -399,10 +408,8 @@ func (h *Handler) handleProblemSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Persist the mapping in the store.
-	if mapper, ok := h.store.(interface{ MapProblem(string, string, string, string) }); ok {
-		mapper.MapProblem(req.Course, req.Contest, req.ProblemID, csojID)
-	}
+	// Persist the mapping.
+	mapper.MapProblem(req.Course, req.Contest, req.ProblemID, csojID)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)

@@ -915,3 +915,98 @@ func TestReattachIncompleteLabelsSameOwner(t *testing.T) {
 		t.Errorf("orphan volumes: expected 2 (different course + missing problem), got %d", result.OrphanVolumes)
 	}
 }
+
+// Round 11: Problem sync endpoint tests
+
+type fakeProblemSync struct {
+	lastCourse  string
+	lastContest string
+	lastProblem string
+	err         error
+	csojID      string
+}
+
+func (f *fakeProblemSync) SyncProblem(ctx context.Context, course, contest, problemID, title, startTime, endTime string, cluster string, cpu, memory int, upload map[string]interface{}, workflow []map[string]interface{}, score map[string]interface{}) (string, error) {
+	f.lastCourse = course
+	f.lastContest = contest
+	f.lastProblem = problemID
+	if f.err != nil { return "", f.err }
+	if f.csojID != "" { return f.csojID, nil }
+	return contest + "--" + problemID, nil
+}
+
+func TestProblemSyncSuccess(t *testing.T) {
+	s := NewSerializedStore()
+	fs := &fakeProblemSync{csojID: "c1--hw1"}
+	h := NewHandlerWithOpts(s, nil, nil, HandlerOpts{ProblemSync: fs})
+	body := `{"course":"cs101","contest":"c1","problem_id":"hw1","title":"Homework 1"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/problems/sync", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated { t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String()) }
+	// Verify mapping was persisted
+	if mid := s.ResolveProblem("cs101", "c1", "hw1"); mid != "c1--hw1" {
+		t.Errorf("mapping not persisted: got %q", mid)
+	}
+	if fs.lastContest != "c1" || fs.lastProblem != "hw1" { t.Errorf("sync args: contest=%s problem=%s", fs.lastContest, fs.lastProblem) }
+}
+
+func TestProblemSyncAdapterError(t *testing.T) {
+	s := NewSerializedStore()
+	fs := &fakeProblemSync{err: fmt.Errorf("CSOJ unreachable")}
+	h := NewHandlerWithOpts(s, nil, nil, HandlerOpts{ProblemSync: fs})
+	body := `{"course":"cs101","contest":"c1","problem_id":"hw1","title":"HW1"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/problems/sync", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError { t.Errorf("expected 500, got %d", rec.Code) }
+}
+
+func TestProblemSyncNoMappingStore(t *testing.T) {
+	// memStore does not implement MapProblem
+	fs := &fakeProblemSync{}
+	h := NewHandlerWithOpts(memStore{}, nil, nil, HandlerOpts{ProblemSync: fs})
+	body := `{"course":"cs101","contest":"c1","problem_id":"hw1","title":"HW1"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/problems/sync", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError { t.Errorf("expected 500 for missing mapper, got %d", rec.Code) }
+}
+
+func TestProblemSyncDuplicateContests(t *testing.T) {
+	s := NewSerializedStore()
+	fs := &fakeProblemSync{}
+	h := NewHandlerWithOpts(s, nil, nil, HandlerOpts{ProblemSync: fs})
+	// Sync p1 in contest c1
+	body1 := `{"course":"cs101","contest":"c1","problem_id":"p1","title":"P1"}`
+	req1 := httptest.NewRequest(http.MethodPost, "/api/v1/problems/sync", strings.NewReader(body1))
+	req1.Header.Set("Content-Type", "application/json")
+	rec1 := httptest.NewRecorder()
+	h.ServeHTTP(rec1, req1)
+	if rec1.Code != http.StatusCreated { t.Fatalf("c1: %d", rec1.Code) }
+	// Sync p1 in contest c2 — should map independently
+	fs.csojID = "c2--p1"
+	body2 := `{"course":"cs101","contest":"c2","problem_id":"p1","title":"P1"}`
+	req2 := httptest.NewRequest(http.MethodPost, "/api/v1/problems/sync", strings.NewReader(body2))
+	req2.Header.Set("Content-Type", "application/json")
+	rec2 := httptest.NewRecorder()
+	h.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusCreated { t.Fatalf("c2: %d", rec2.Code) }
+	// Verify independent mappings
+	if s.ResolveProblem("cs101", "c1", "p1") != "c1--p1" { t.Error("c1 mapping wrong") }
+	if s.ResolveProblem("cs101", "c2", "p1") != "c2--p1" { t.Error("c2 mapping wrong") }
+}
+
+func TestProblemSyncMissingService(t *testing.T) {
+	s := NewSerializedStore()
+	h := NewHandler(s, nil, nil) // no problem sync service
+	body := `{"course":"cs101","contest":"c1","problem_id":"hw1","title":"HW1"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/problems/sync", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable { t.Errorf("expected 503, got %d", rec.Code) }
+}
