@@ -102,6 +102,30 @@ spec:
             - containerPort: 2222
               name: ssh
               protocol: TCP
+        - name: bastion-mgmt
+          image: hpc101-platform/bastion-mgmt:latest
+          ports:
+            - containerPort: 8081
+              name: mgmt
+              protocol: TCP
+          env:
+            - name: HPC101_CONTROLLER_URL
+              value: "http://controller.hpc101-platform.svc.cluster.local:8080"
+            - name: HPC101_BASTION_MGMT_PORT
+              value: "8081"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+            runAsNonRoot: true
+            runAsUser: 1000
+          resources:
+            requests:
+              cpu: "10m"
+              memory: "16Mi"
+            limits:
+              cpu: "50m"
+              memory: "64Mi"
           volumeMounts:
             - name: sshd-config
               mountPath: /etc/ssh/sshd_config

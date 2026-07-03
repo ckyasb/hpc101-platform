@@ -6,9 +6,11 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/mount"
+	"github.com/docker/docker/api/types/volume"
 	"github.com/docker/docker/client"
 	"github.com/docker/go-connections/nat"
 )
@@ -143,6 +145,81 @@ type DiscoveredContainer struct {
 	Host   string
 	Port   uint16
 	Labels map[string]string
+}
+
+// DiscoveredVolume represents a volume found during discovery.
+type DiscoveredVolume struct {
+	Name   string
+	Driver string
+	Labels map[string]string
+}
+
+// DiscoveredNetwork represents a network found during discovery.
+type DiscoveredNetwork struct {
+	ID     string
+	Name   string
+	Driver string
+	Labels map[string]string
+}
+
+// ListVolumes returns volumes matching the given labels via Docker API.
+func (c *Client) ListVolumes(ctx context.Context, labels map[string]string) ([]DiscoveredVolume, error) {
+	filterArgs := filters.NewArgs()
+	for k, v := range labels {
+		filterArgs.Add(k, v)
+	}
+	resp, err := c.cli.VolumeList(ctx, volume.ListOptions{Filters: filterArgs})
+	if err != nil {
+		return nil, fmt.Errorf("runtime: list volumes: %w", err)
+	}
+	result := make([]DiscoveredVolume, 0, len(resp.Volumes))
+	for _, v := range resp.Volumes {
+		result = append(result, DiscoveredVolume{Name: v.Name, Driver: v.Driver, Labels: v.Labels})
+	}
+	return result, nil
+}
+
+// ListNetworks returns networks matching the given labels via Docker API.
+func (c *Client) ListNetworks(ctx context.Context, labels map[string]string) ([]DiscoveredNetwork, error) {
+	filterArgs := filters.NewArgs()
+	for k, v := range labels {
+		filterArgs.Add(k, v)
+	}
+	networks, err := c.cli.NetworkList(ctx, types.NetworkListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("runtime: list networks: %w", err)
+	}
+	result := make([]DiscoveredNetwork, 0)
+	for _, n := range networks {
+		match := true
+		for lk, lv := range labels {
+			if n.Labels[lk] != lv {
+				match = false
+				break
+			}
+		}
+		if !match {
+			continue
+		}
+		result = append(result, DiscoveredNetwork{ID: n.ID, Name: n.Name, Driver: n.Driver, Labels: n.Labels})
+	}
+	return result, nil
+}
+
+// RemoveVolume removes a volume by name.
+func (c *Client) RemoveVolume(ctx context.Context, name string) error {
+	if err := c.cli.VolumeRemove(ctx, name, true); err != nil {
+		return fmt.Errorf("runtime: remove volume %s: %w", name, err)
+	}
+	return nil
+}
+
+// RemoveNetwork removes a network by ID or name.
+func (c *Client) RemoveNetwork(ctx context.Context, id string) error {
+	if err := c.cli.NetworkRemove(ctx, id); err != nil {
+		return fmt.Errorf("runtime: remove network %s: %w", id, err)
+	}
+	return nil
 }
 
 // ListContainers returns containers matching the given labels.

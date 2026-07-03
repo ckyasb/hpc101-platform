@@ -558,6 +558,7 @@ func TestReleaseServiceDown(t *testing.T) {
 type fakeDiscovery struct {
 	containers []DiscoveryContainer
 	volumes    []DiscoveryVolume
+	networks   []DiscoveryNetwork
 }
 
 func (f *fakeDiscovery) ListContainers(labels map[string]string) ([]DiscoveryContainer, error) {
@@ -566,6 +567,10 @@ func (f *fakeDiscovery) ListContainers(labels map[string]string) ([]DiscoveryCon
 
 func (f *fakeDiscovery) ListVolumes(labels map[string]string) ([]DiscoveryVolume, error) {
 	return f.volumes, nil
+}
+
+func (f *fakeDiscovery) ListNetworks(labels map[string]string) ([]DiscoveryNetwork, error) {
+	return f.networks, nil
 }
 
 func TestReattachLeases(t *testing.T) {

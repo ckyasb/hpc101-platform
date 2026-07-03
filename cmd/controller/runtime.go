@@ -76,3 +76,35 @@ func (a *runtimeAdapter) ListContainers(labels map[string]string) ([]controller.
 	}
 	return result, nil
 }
+
+func (a *runtimeAdapter) ListVolumes(labels map[string]string) ([]controller.DiscoveryVolume, error) {
+	vols, err := a.client.ListVolumes(context.Background(), labels)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]controller.DiscoveryVolume, len(vols))
+	for i, v := range vols {
+		result[i] = controller.DiscoveryVolume{Name: v.Name, Driver: v.Driver, Labels: v.Labels}
+	}
+	return result, nil
+}
+
+func (a *runtimeAdapter) ListNetworks(labels map[string]string) ([]controller.DiscoveryNetwork, error) {
+	nets, err := a.client.ListNetworks(context.Background(), labels)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]controller.DiscoveryNetwork, len(nets))
+	for i, n := range nets {
+		result[i] = controller.DiscoveryNetwork{ID: n.ID, Name: n.Name, Driver: n.Driver, Labels: n.Labels}
+	}
+	return result, nil
+}
+
+func (a *runtimeAdapter) RemoveVolume(ctx context.Context, name string) error {
+	return a.client.RemoveVolume(ctx, name)
+}
+
+func (a *runtimeAdapter) RemoveNetwork(ctx context.Context, id string) error {
+	return a.client.RemoveNetwork(ctx, id)
+}

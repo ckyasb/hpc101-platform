@@ -38,6 +38,7 @@ func (h *Handler) handleBastionRoster(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	seen := map[string]bool{}
 	now := time.Now()
 	for _, sess := range roster.Sessions {
 		if sess.Principal == "" {
@@ -60,7 +61,19 @@ func (h *Handler) handleBastionRoster(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+		seen[sess.Principal] = true
 		_ = h.store.UpsertLease(l)
+	}
+
+	// Diff: zero active channel counts for active leases NOT in this roster.
+	if lister, ok := h.store.(LeaseStoreWithList); ok {
+		for _, l := range lister.AllLeases() {
+			if l.State != "Active" || seen[l.Owner] {
+				continue
+			}
+			l.ActiveChannelCount = 0
+			_ = h.store.UpsertLease(l)
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")

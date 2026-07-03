@@ -136,13 +136,19 @@ func NewHandlerWithDrainerAndSigner(store LeaseStore, runtime ContainerCreator, 
 }
 
 func newHandler(store LeaseStore, runtime ContainerCreator, submission SubmissionService, drainer BastionDrainer, signer CertSigner) *Handler {
+	var ks KeyStore
+	if kstore, ok := store.(KeyStore); ok {
+		ks = kstore
+	} else {
+		ks = &inMemKeyStore{keys: make(map[string]string)}
+	}
 	h := &Handler{
 		store:       store,
 		runtime:     runtime,
 		submission:  submission,
 		drainer:     drainer,
 		certSigner:  signer,
-		keyStore:    &inMemKeyStore{keys: make(map[string]string)},
+		keyStore:    ks,
 		submissions: make(map[string]*SubmissionRecord),
 		mux:         http.NewServeMux(),
 	}
