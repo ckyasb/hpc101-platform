@@ -4,6 +4,7 @@
 package controller
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -50,7 +51,7 @@ type ContainerCreator interface {
 
 // SubmissionService is the interface for submitting solutions for judging.
 type SubmissionService interface {
-	Submit(problemID string, files map[string][]byte) (string, error)
+	Submit(ctx context.Context, problemID string, files map[string][]byte) (string, error)
 }
 
 // Handler serves the controller HTTP API.
@@ -252,7 +253,7 @@ func (h *Handler) handleSubmissions(w http.ResponseWriter, r *http.Request) {
 		}
 		files[name] = data
 	}
-	id, err := h.submission.Submit(req.ProblemID, files)
+	id, err := h.submission.Submit(r.Context(), req.ProblemID, files)
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
 		return

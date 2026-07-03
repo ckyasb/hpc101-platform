@@ -24,8 +24,8 @@ func newSubmissionService() controller.SubmissionService {
 	return &adapterSubmission{client: c}
 }
 
-func (s *adapterSubmission) Submit(problemID string, files map[string][]byte) (string, error) {
-	return s.client.Submit(context.Background(), adapter.SubmitRequest{
+func (s *adapterSubmission) Submit(ctx context.Context, problemID string, files map[string][]byte) (string, error) {
+	return s.client.Submit(ctx, adapter.SubmitRequest{
 		ProblemID: problemID,
 		Files:     files,
 	})

@@ -1,7 +1,9 @@
 package controller
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -155,5 +157,75 @@ func TestHandleLeasesNoActiveLease(t *testing.T) {
 
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("expected 404 for no lease, got %d", rec.Code)
+	}
+}
+
+type fakeSubmission struct {
+	lastProblemID string
+	lastFiles     map[string][]byte
+	err           error
+	id            string
+}
+
+func (f *fakeSubmission) Submit(ctx context.Context, problemID string, files map[string][]byte) (string, error) {
+	f.lastProblemID = problemID
+	f.lastFiles = files
+	if f.err != nil {
+		return "", f.err
+	}
+	if f.id == "" {
+		return "sub-123", nil
+	}
+	return f.id, nil
+}
+
+func TestSubmitHandlerSuccess(t *testing.T) {
+	f := &fakeSubmission{}
+	h := NewHandler(memStore{}, nil, f)
+	body := `{"problem_id":"p1","files":{"main.c":"aW50IG1haW4oKXt9"}}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/submissions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if f.lastProblemID != "p1" {
+		t.Errorf("problem_id: %s", f.lastProblemID)
+	}
+}
+
+func TestSubmitHandlerMissingService(t *testing.T) {
+	h := NewHandler(memStore{}, nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/submissions", strings.NewReader(`{"problem_id":"p1","files":{"a":"b"}}`))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503, got %d", rec.Code)
+	}
+}
+
+func TestSubmitHandlerEmptyInputs(t *testing.T) {
+	h := NewHandler(memStore{}, nil, &fakeSubmission{})
+	for _, body := range []string{`{"problem_id":"","files":{"a":"b"}}`, `{"problem_id":"p1","files":{}}`} {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/submissions", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("body %q: expected 400, got %d", body, rec.Code)
+		}
+	}
+}
+
+func TestSubmitHandlerServiceError(t *testing.T) {
+	f := &fakeSubmission{err: fmt.Errorf("CSOJ unavailable")}
+	h := NewHandler(memStore{}, nil, f)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/submissions", strings.NewReader(`{"problem_id":"p1","files":{"a":"YQ=="}}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
