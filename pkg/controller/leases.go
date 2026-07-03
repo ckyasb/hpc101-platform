@@ -62,15 +62,20 @@ type SubmissionService interface {
 
 // Handler serves the controller HTTP API.
 type Handler struct {
+	drainer    BastionDrainer
 	store      LeaseStore
 	runtime    ContainerCreator
 	submission SubmissionService
 	mux        *http.ServeMux
 }
 
-// NewHandler creates a controller API handler.
+// NewHandler creates a controller API handler with a nil drainer.
 func NewHandler(store LeaseStore, runtime ContainerCreator, submission SubmissionService) *Handler {
-	h := &Handler{store: store, runtime: runtime, submission: submission, mux: http.NewServeMux()}
+	return newHandler(store, runtime, submission, nil)
+}
+
+func newHandler(store LeaseStore, runtime ContainerCreator, submission SubmissionService, drainer BastionDrainer) *Handler {
+	h := &Handler{store: store, runtime: runtime, submission: submission, drainer: drainer, mux: http.NewServeMux()}
 	h.mux.HandleFunc("/api/v1/leases", h.handleLeases)
 	h.mux.HandleFunc("/api/v1/services", h.handleCreateService)
 	h.mux.HandleFunc("/api/v1/release", h.handleRelease)
@@ -194,34 +199,17 @@ func (h *Handler) handleRelease(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"invalid principal"}`, http.StatusBadRequest)
 		return
 	}
-	l, err := h.store.LookupByPrincipal(principal)
-	if err != nil || l == nil {
-		http.Error(w, `{"error":"no active lease"}`, http.StatusNotFound)
+	s, ok := h.store.(*serializedStore)
+	if !ok {
+		http.Error(w, `{"error":"store does not support release"}`, http.StatusInternalServerError)
 		return
 	}
-	if !l.Release(lease.TriggerManual) {
-		http.Error(w, `{"error":"release failed"}`, http.StatusConflict)
-		return
-	}
-	rt := h.runtime
-	if err := l.ExecuteRelease(func(s lease.ReleaseState) error {
-		if s == lease.StateStopped && rt != nil {
-			return rt.StopService(l.ContainerID)
-		}
-		return nil
-	}); err != nil {
-		// Restore Active: container may still be running
-		l.State = lease.StateActive
-		h.store.UpsertLease(l)
-		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
-		return
-	}
-	if err := h.store.UpsertLease(l); err != nil {
+	if err := s.ReleaseLeaseIf(principal, lease.TriggerManual, func(l *Lease) bool { return true }, h.runtime, h.drainer); err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": string(l.State)})
+	json.NewEncoder(w).Encode(map[string]string{"status": string(lease.StateReclaimed)})
 }
 
 func (h *Handler) handleProblems(w http.ResponseWriter, r *http.Request) {

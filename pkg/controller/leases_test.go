@@ -48,7 +48,8 @@ func (f *fakeRuntime) StopService(containerID string) error {
 
 func TestHandleLeasesActive(t *testing.T) {
 	l := lease.NewLease("student-42", "abc", "svc-student-42", "10.0.0.5", 2222, 8*time.Hour, 30*time.Minute)
-	store := memStore{"student-42": l}
+	store := NewSerializedStore()
+	store.UpsertLease(l)
 	h := NewHandler(store, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/leases?principal=student-42", nil)
@@ -303,7 +304,8 @@ func TestSubmitHandlerMethodRejection(t *testing.T) {
 
 func TestReleaseSuccess(t *testing.T) {
 	l := lease.NewLease("student-42", "ctr-abc", "svc-student-42", "10.0.0.5", 2222, 8*time.Hour, 30*time.Minute)
-	store := memStore{"student-42": l}
+	store := NewSerializedStore()
+	store.UpsertLease(l)
 	rt := &fakeRuntime{}
 	h := NewHandler(store, rt, nil)
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/release?principal=student-42", nil)
@@ -312,11 +314,12 @@ func TestReleaseSuccess(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
-	if l.State != lease.StateReclaimed {
-		t.Errorf("state: %s", l.State)
+	final, _ := store.LookupByPrincipal("student-42")
+	if final == nil || final.State != lease.StateReclaimed {
+		t.Errorf("state: %v", final)
 	}
-	if l.ReleasedBy != lease.TriggerManual {
-		t.Errorf("ReleasedBy: %s", l.ReleasedBy)
+	if final != nil && final.ReleasedBy != lease.TriggerManual {
+		t.Errorf("ReleasedBy: %s", final.ReleasedBy)
 	}
 	if rt.stoppedContainerID != "ctr-abc" {
 		t.Errorf("stop not called, or wrong ID: %q", rt.stoppedContainerID)
@@ -340,7 +343,7 @@ func TestSerializedStoreConcurrentReleaseAndUp(t *testing.T) {
 
 	// Start release in goroutine
 	done := make(chan error, 1)
-	go func() { done <- s.ReleaseLease("student-42", rt) }()
+	go func() { done <- s.ReleaseLeaseIf("student-42", lease.TriggerManual, func(l *Lease) bool { return true }, rt, nil) }()
 
 	// Concurrently upsert a fresh lease (simulating 'up' during release)
 	time.Sleep(5 * time.Millisecond)
@@ -369,8 +372,9 @@ func TestSerializedStoreConcurrentReleaseAndUp(t *testing.T) {
 }
 
 func TestReleaseServiceDown(t *testing.T) {
+	store := NewSerializedStore()
 	l := lease.NewLease("student-42", "ctr-abc", "svc-student-42", "10.0.0.5", 2222, 8*time.Hour, 30*time.Minute)
-	store := memStore{"student-42": l}
+	store.UpsertLease(l)
 	h := NewHandler(store, &fakeRuntimeFailing{}, nil)
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/release?principal=student-42", nil)
 	rec := httptest.NewRecorder()
@@ -378,7 +382,8 @@ func TestReleaseServiceDown(t *testing.T) {
 	if rec.Code != http.StatusInternalServerError {
 		t.Errorf("expected 500, got %d", rec.Code)
 	}
-	if l.State != lease.StateActive {
-		t.Errorf("lease should remain Active after failed stop, got %s", l.State)
+	final, _ := store.LookupByPrincipal("student-42")
+	if final == nil || final.State != lease.StateActive {
+		t.Errorf("lease should remain Active after failed stop, got %v", final)
 	}
 }

@@ -16,56 +16,76 @@ func NewSerializedStore() *serializedStore {
 	return &serializedStore{leases: make(map[string]*Lease)}
 }
 
+// LookupByPrincipal returns a COPY of the lease or nil.
 func (s *serializedStore) LookupByPrincipal(p string) (*Lease, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	l, ok := s.leases[p]
-	if !ok {
+	if !ok || l == nil {
 		return nil, nil
 	}
-	return l, nil
+	cpy := *l
+	return &cpy, nil
 }
 
 func (s *serializedStore) UpsertLease(l *Lease) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.leases[l.Owner] = l
+	cpy := *l
+	s.leases[l.Owner] = &cpy
 	return nil
 }
 
-func (s *serializedStore) ReleaseLease(principal string, rt ContainerCreator) error {
-	s.mu.Lock()
-	l, ok := s.leases[principal]
-	if !ok || l == nil {
-		s.mu.Unlock()
-		return fmt.Errorf("no active lease for %s", principal)
-	}
-	if !l.Release(lease.TriggerManual) {
-		s.mu.Unlock()
-		return fmt.Errorf("release failed for %s", principal)
-	}
-	s.mu.Unlock()
-
-	if err := l.ExecuteRelease(func(state lease.ReleaseState) error {
-		if state == lease.StateStopped && rt != nil {
-			return rt.StopService(l.ContainerID)
-		}
-		return nil
-	}); err != nil {
-		l.State = lease.StateActive
-		s.UpsertLease(l)
-		return err
-	}
-	s.UpsertLease(l)
-	return nil
-}
-
+// AllLeases returns COPIES of all stored leases (safe for read-only iteration).
 func (s *serializedStore) AllLeases() []*Lease {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	result := make([]*Lease, 0, len(s.leases))
 	for _, l := range s.leases {
-		result = append(result, l)
+		cpy := *l
+		result = append(result, &cpy)
 	}
 	return result
+}
+
+// ReleaseLeaseIf is the ONE release operation used by HTTP release, max-life,
+// and idle triggers. It holds the store lock for the full lifecycle (including
+// drain and stop) to serialize release vs concurrent up/trigger.
+func (s *serializedStore) ReleaseLeaseIf(principal string, trigger lease.Trigger, shouldRelease func(*Lease) bool, rt ContainerCreator, drainer BastionDrainer) error {
+	s.mu.Lock()
+	l, ok := s.leases[principal]
+	if !ok || l == nil || l.State != lease.StateActive || !shouldRelease(l) {
+		s.mu.Unlock()
+		return fmt.Errorf("release not applicable for %s", principal)
+	}
+	if !l.Release(trigger) {
+		s.mu.Unlock()
+		return fmt.Errorf("release already in progress for %s", principal)
+	}
+	containerID := l.ContainerID
+	s.mu.Unlock()
+
+	// Execute lifecycle with drain before stop
+	err := l.ExecuteRelease(func(state lease.ReleaseState) error {
+		if state == lease.StateDraining && drainer != nil {
+			return drainer.Drain(principal)
+		}
+		if state == lease.StateStopped && rt != nil {
+			return rt.StopService(containerID)
+		}
+		return nil
+	})
+
+	// Re-lock for final upsert or recovery
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err != nil {
+		l.State = lease.StateActive
+		l.ReleasedBy = ""
+		l.ReleasedAt = lease.Lease{}.ReleasedAt // zero time
+		s.leases[principal] = l
+		return err
+	}
+	s.leases[principal] = l
+	return nil
 }
