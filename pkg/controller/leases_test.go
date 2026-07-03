@@ -193,6 +193,19 @@ func TestSubmitHandlerSuccess(t *testing.T) {
 	if f.lastProblemID != "p1" {
 		t.Errorf("problem_id: %s", f.lastProblemID)
 	}
+	// Assert decoded file content
+	if string(f.lastFiles["main.c"]) != "int main(){}" {
+		t.Errorf("decoded file: %s", f.lastFiles["main.c"])
+	}
+	// Assert response body
+	var resp map[string]string
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp["submission_id"] != "sub-123" {
+		t.Errorf("submission_id: %s", resp["submission_id"])
+	}
+	if resp["status"] != "submitted" {
+		t.Errorf("status: %s", resp["status"])
+	}
 }
 
 func TestSubmitHandlerMissingService(t *testing.T) {

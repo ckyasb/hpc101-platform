@@ -193,7 +193,17 @@ func (h *Handler) handleRelease(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"no active lease"}`, http.StatusNotFound)
 		return
 	}
-	if err := l.ExecuteRelease(func(s lease.ReleaseState) error { return nil }); err != nil {
+	if !l.Release(lease.TriggerManual) {
+		http.Error(w, `{"error":"release failed"}`, http.StatusConflict)
+		return
+	}
+	runtime := h.runtime
+	if err := l.ExecuteRelease(func(s lease.ReleaseState) error {
+		if s == lease.StateDraining && runtime != nil {
+			runtime.CreateService(CreateServiceRequest{}) // placeholder — real drains bastion channels
+		}
+		return nil
+	}); err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
 		return
 	}
