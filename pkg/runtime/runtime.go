@@ -101,7 +101,7 @@ func (c *Client) CreateContainer(ctx context.Context, req CreateContainerRequest
 	}
 	host := bindings[0].HostIP
 	if host == "" || host == "0.0.0.0" {
-		host = "podman-runtime.hpc101-runtime.svc.cluster.local"
+		host = "dedicated-judge-runtime.hpc101-runtime.svc.cluster.local"
 	}
 	p, err := strconv.ParseUint(bindings[0].HostPort, 10, 16)
 	if err != nil {
@@ -248,7 +248,7 @@ func (c *Client) ListContainers(ctx context.Context, labels map[string]string) (
 		result = append(result, DiscoveredContainer{
 			ID:     ctr.ID,
 			Name:   strings.TrimPrefix(ctr.Names[0], "/"),
-			Host:   "podman-runtime.hpc101-runtime.svc.cluster.local",
+			Host:   "dedicated-judge-runtime.hpc101-runtime.svc.cluster.local",
 			Port:   port,
 			Labels: ctr.Labels,
 		})

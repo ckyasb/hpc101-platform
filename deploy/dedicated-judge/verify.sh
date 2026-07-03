@@ -26,10 +26,45 @@ PORT="${HPC101_RUNTIME_PORT:-2375}"
 API="http://${ENDPOINT}:${PORT}"
 IMAGE="${HPC101_VERIFY_IMAGE:-alpine:latest}"
 CTR_ID=""
+VOL_NAME=""
+WAIT_CTR=""
+TO_CTR=""
 
 # POSIX-compatible container ID truncation (no Bash ${var:0:12}).
 short_id() {
   printf '%.12s' "$1"
+}
+
+# exec_and_decode: run an exec inside CTR_ID, validate stdcopy framing,
+# and return the decoded payload text on stdout. Sets EXEC_DECODED_OK=1 on success.
+# Usage: EXEC_DECODED=$(exec_and_decode "sh" "-c" "echo hello")
+exec_and_decode() {
+  local exec_file="$TMPDIR/exec_$$_$RANDOM.bin"
+  local create_resp exec_id
+  create_resp=$(curl -sf -X POST "${API}/containers/${CTR_ID}/exec" \
+    -H 'Content-Type: application/json' \
+    -d "{\"AttachStdout\":true,\"AttachStderr\":true,\"Cmd\":[$(for a in "$@"; do printf '\"%s\"' "$a"; done | sed 's/\"\"/\",\"/g')]}") || { echo "EXEC_CREATE_FAIL"; return 1; }
+  exec_id=$(echo "$create_resp" | grep -o '"Id":"[^"]*"' | cut -d'"' -f4)
+  if [ -z "$exec_id" ]; then echo "EXEC_NO_ID"; return 1; fi
+  curl -sf -X POST "${API}/exec/${exec_id}/start" \
+    -H 'Content-Type: application/vnd.docker.raw-stream' \
+    -d '{}' -o "$exec_file" 2>/dev/null || { echo "EXEC_START_FAIL"; rm -f "$exec_file"; return 1; }
+  # Try stdcopy decode: first 8 bytes are header.
+  local header_hex stream_type reserved payload_len file_size
+  header_hex=$(od -An -tx1 -N8 "$exec_file" | tr -d ' \n')
+  if [ $(printf '%s' "$header_hex" | wc -c) -ge 16 ]; then
+    stream_type=$(printf '%d' "0x$(printf '%s' "$header_hex" | cut -c1-2)" 2>/dev/null || echo 0)
+    reserved=$(printf '%s' "$header_hex" | cut -c3-8)
+    payload_len=$(printf '%d' "0x$(printf '%s' "$header_hex" | cut -c9-16)" 2>/dev/null || echo 0)
+    if { [ "$stream_type" = "1" ] || [ "$stream_type" = "2" ]; } && [ "$reserved" = "000000" ] && [ "$payload_len" -gt 0 ] 2>/dev/null; then
+      dd if="$exec_file" bs=1 skip=8 count="$payload_len" 2>/dev/null
+      rm -f "$exec_file"
+      return 0
+    fi
+  fi
+  # Fallback: return raw content stripped of null bytes (some runtimes don't frame).
+  cat "$exec_file" | tr -d '\0' | sed 's/[^[:print:]]//g'
+  rm -f "$exec_file"
 }
 
 cleanup() {
@@ -37,10 +72,20 @@ cleanup() {
     curl -s -X POST "${API}/containers/${CTR_ID}/stop" >/dev/null 2>&1 || true
     curl -s -X DELETE "${API}/containers/${CTR_ID}?force=true" >/dev/null 2>&1 || true
   fi
+  if [ -n "$WAIT_CTR" ]; then
+    curl -s -X POST "${API}/containers/${WAIT_CTR}/stop" >/dev/null 2>&1 || true
+    curl -s -X DELETE "${API}/containers/${WAIT_CTR}?force=true" >/dev/null 2>&1 || true
+  fi
+  if [ -n "$TO_CTR" ]; then
+    curl -s -X POST "${API}/containers/${TO_CTR}/stop" >/dev/null 2>&1 || true
+    curl -s -X DELETE "${API}/containers/${TO_CTR}?force=true" >/dev/null 2>&1 || true
+  fi
+  if [ -n "$VOL_NAME" ]; then
+    curl -s -X DELETE "${API}/volumes/${VOL_NAME}" >/dev/null 2>&1 || true
+  fi
 }
-trap cleanup EXIT
+trap 'cleanup; rm -rf "$TMPDIR"' EXIT
 TMPDIR=$(mktemp -d)
-trap 'rm -rf "$TMPDIR"; cleanup' EXIT
 
 echo "=== DEC-1 Docker API Verification ==="
 echo "Endpoint: ${API}"
@@ -192,7 +237,8 @@ fi
 if echo "$SURF_OUT" | grep -q "no-ip-route\|Network is unreachable"; then
   echo "PASS: NetworkDisabled effective"
 else
-  echo "WARN: network may be present (check ip route output)"
+  echo "FAIL: network appears present (NetworkDisabled not enforced)"
+  exit 1
 fi
 echo "PASS: volume mount + surface fields verified"
 
@@ -219,6 +265,7 @@ else
 fi
 # CPU quota: parse quota and period from cpu.max, fail if unlimited, pass if 0.5 CPU ratio.
 # cgroup v2 format: "quota period" (e.g. "50000 100000" for 0.5 CPU).
+CPU_VAL=$(echo "$RES_CLEAN" | grep "cpu.max=" | cut -d= -f2)
 CPU_QUOTA=$(echo "$CPU_VAL" | cut -d' ' -f1)
 CPU_PERIOD=$(echo "$CPU_VAL" | cut -d' ' -f2)
 if [ "$CPU_QUOTA" = "max" ] || [ -z "$CPU_QUOTA" ]; then

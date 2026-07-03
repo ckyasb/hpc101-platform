@@ -14,7 +14,7 @@ import (
 func main() {
 	endpoint := os.Getenv("HPC101_RUNTIME_ENDPOINT")
 	if endpoint == "" {
-		log.Fatal("HPC101_RUNTIME_ENDPOINT required (e.g. tcp://podman-runtime.hpc101-runtime:2375)")
+		log.Fatal("HPC101_RUNTIME_ENDPOINT required (e.g. tcp://dedicated-judge-runtime.hpc101-runtime:2375)")
 	}
 	rt, err := newRuntimeAdapter(endpoint)
 	if err != nil {
