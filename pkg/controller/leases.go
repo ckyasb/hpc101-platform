@@ -56,6 +56,12 @@ type BastionDrainer interface {
 	Drain(principal string) error
 }
 
+// ProblemSyncService is the interface for projecting platform problems
+// into CSOJ contest/problem records and returning the scoped CSOJ problem ID.
+type ProblemSyncService interface {
+	SyncProblem(ctx context.Context, course, contest, problemID, title, startTime, endTime string, cluster string, cpu, memory int, upload map[string]interface{}, workflow []map[string]interface{}, score map[string]interface{}) (csojID string, err error)
+}
+
 // SubmissionService is the interface for submitting solutions for judging
 // and querying results. The adapter implements both submission and result retrieval.
 type SubmissionService interface {
@@ -111,20 +117,28 @@ type KeyStore interface {
 
 // Handler serves the controller HTTP API.
 type Handler struct {
-	mu          sync.Mutex
-	drainer     BastionDrainer
-	store       LeaseStore
-	runtime     ContainerCreator
-	submission  SubmissionService
-	certSigner  CertSigner
-	keyStore    KeyStore
-	submissions map[string]*SubmissionRecord // submissionID → record
-	mux         *http.ServeMux
+	mu           sync.Mutex
+	drainer      BastionDrainer
+	store        LeaseStore
+	runtime      ContainerCreator
+	submission   SubmissionService
+	certSigner   CertSigner
+	keyStore     KeyStore
+	problemSync  ProblemSyncService
+	submissions  map[string]*SubmissionRecord // submissionID → record
+	mux          *http.ServeMux
 }
 
 // NewHandler creates a controller API handler with no drainer or cert signer.
 func NewHandler(store LeaseStore, runtime ContainerCreator, submission SubmissionService) *Handler {
 	return newHandler(store, runtime, submission, nil, nil)
+}
+
+// NewHandlerWithProblemSync creates a handler with problem projection capability.
+func NewHandlerWithProblemSync(store LeaseStore, runtime ContainerCreator, submission SubmissionService, sync ProblemSyncService) *Handler {
+	h := newHandler(store, runtime, submission, nil, nil)
+	h.problemSync = sync
+	return h
 }
 
 // NewHandlerWithCertSigner creates a handler with SSH cert signing capability.
@@ -156,6 +170,7 @@ func newHandler(store LeaseStore, runtime ContainerCreator, submission Submissio
 		drainer:     drainer,
 		certSigner:  signer,
 		keyStore:    ks,
+		problemSync: nil,
 		submissions: make(map[string]*SubmissionRecord),
 		mux:         http.NewServeMux(),
 	}
@@ -163,6 +178,7 @@ func newHandler(store LeaseStore, runtime ContainerCreator, submission Submissio
 	h.mux.HandleFunc("/api/v1/services", h.handleCreateService)
 	h.mux.HandleFunc("/api/v1/release", h.handleRelease)
 	h.mux.HandleFunc("/api/v1/problems", h.handleProblems)
+	h.mux.HandleFunc("/api/v1/problems/sync", h.handleProblemSync)
 	h.mux.HandleFunc("/api/v1/scores", h.handleScores)
 	h.mux.HandleFunc("/api/v1/submissions", h.handleSubmissions)
 	h.mux.HandleFunc("/api/v1/submissions/", h.handleSubmissionByID)
@@ -339,6 +355,64 @@ func (h *Handler) handleRelease(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": string(lease.StateReclaimed)})
+}
+
+func (h *Handler) handleProblemSync(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	if h.problemSync == nil {
+		http.Error(w, `{"error":"problem sync not configured"}`, http.StatusServiceUnavailable)
+		return
+	}
+	var req struct {
+		Course    string                 `json:"course"`
+		Contest   string                 `json:"contest"`
+		ProblemID string                 `json:"problem_id"`
+		Title     string                 `json:"title"`
+		StartTime string                 `json:"start_time"`
+		EndTime   string                 `json:"end_time"`
+		Cluster   string                 `json:"cluster"`
+		CPU       int                    `json:"cpu"`
+		Memory    int                    `json:"memory"`
+		Upload    map[string]interface{} `json:"upload"`
+		Workflow  []map[string]interface{} `json:"workflow"`
+		Score     map[string]interface{} `json:"score"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
+		return
+	}
+	if req.Course == "" || req.Contest == "" || req.ProblemID == "" {
+		http.Error(w, `{"error":"course, contest, and problem_id are required"}`, http.StatusBadRequest)
+		return
+	}
+
+	csojID, err := h.problemSync.SyncProblem(r.Context(),
+		req.Course, req.Contest, req.ProblemID, req.Title,
+		req.StartTime, req.EndTime,
+		req.Cluster, req.CPU, req.Memory,
+		req.Upload, req.Workflow, req.Score)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
+
+	// Persist the mapping in the store.
+	if mapper, ok := h.store.(interface{ MapProblem(string, string, string, string) }); ok {
+		mapper.MapProblem(req.Course, req.Contest, req.ProblemID, csojID)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(map[string]string{
+		"status":           "synced",
+		"course":           req.Course,
+		"contest":          req.Contest,
+		"platform_problem_id": req.ProblemID,
+		"csoj_problem_id":  csojID,
+	})
 }
 
 func (h *Handler) handleProblems(w http.ResponseWriter, r *http.Request) {

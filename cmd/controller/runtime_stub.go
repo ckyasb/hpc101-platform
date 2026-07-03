@@ -28,3 +28,6 @@ func (s *stubSubmission) Submit(ctx context.Context, problemID string, files map
 func (s *stubSubmission) QueryResult(ctx context.Context, submissionID string) (*controller.SubmissionResult, error) {
 	return nil, fmt.Errorf("submission requires go >= 1.25")
 }
+func newProblemSyncService() controller.ProblemSyncService {
+	return nil
+}

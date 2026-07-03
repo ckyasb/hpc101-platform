@@ -54,3 +54,32 @@ func (s *adapterSubmission) QueryResult(ctx context.Context, submissionID string
 func (s *adapterSubmission) StreamLogs(ctx context.Context, submissionID, containerID string, cb func(stream, data string) error) error {
 	return s.svc.StreamLogs(ctx, submissionID, containerID, cb)
 }
+
+type problemSyncAdapter struct {
+	client *adapter.Client
+}
+
+func newProblemSyncService() controller.ProblemSyncService {
+	baseURL := os.Getenv("CSOJ_API_URL")
+	if baseURL == "" {
+		baseURL = "http://csoj.hpc101-platform.svc.cluster.local:8080/api/v1"
+	}
+	token := os.Getenv("CSOJ_JWT_TOKEN")
+	return &problemSyncAdapter{client: adapter.NewClient(baseURL, token)}
+}
+
+func (p *problemSyncAdapter) SyncProblem(ctx context.Context, course, contest, problemID, title, startTime, endTime string, cluster string, cpu, memory int, upload map[string]interface{}, workflow []map[string]interface{}, score map[string]interface{}) (string, error) {
+	return p.client.SyncProblem(ctx, adapter.ContestRecord{
+		ContestID: contest,
+		ProblemID: problemID,
+		Title:     title,
+		StartTime: startTime,
+		EndTime:   endTime,
+		Cluster:   cluster,
+		CPU:       cpu,
+		Memory:    memory,
+		Upload:    upload,
+		Workflow:  workflow,
+		Score:     score,
+	})
+}

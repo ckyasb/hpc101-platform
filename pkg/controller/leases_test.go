@@ -807,3 +807,111 @@ func TestReattachCleanupError(t *testing.T) {
 	if result.OrphanVolumes != 1 { t.Errorf("OrphanVolumes: %d", result.OrphanVolumes) }
 	if result.ReclaimedVolumes != 0 { t.Errorf("ReclaimedVolumes with error: %d", result.ReclaimedVolumes) }
 }
+
+// Round 10: Log endpoint regression tests
+
+type fakeLogStreamer struct {
+	lastSubID string
+	lastCtrID string
+	streams   []string
+}
+
+func (f *fakeLogStreamer) Submit(ctx context.Context, problemID string, files map[string][]byte) (string, error) {
+	return "sub-log-1", nil
+}
+func (f *fakeLogStreamer) QueryResult(ctx context.Context, submissionID string) (*SubmissionResult, error) {
+	return &SubmissionResult{
+		SubmissionID: submissionID,
+		Status:       "Running",
+		Containers:   []ContainerInfo{{ID: "ctr-real-1", Image: "alpine"}},
+	}, nil
+}
+func (f *fakeLogStreamer) StreamLogs(ctx context.Context, submissionID, containerID string, cb func(stream, data string) error) error {
+	f.lastSubID = submissionID
+	f.lastCtrID = containerID
+	f.streams = append(f.streams, "stdout:log-line")
+	return cb("stdout", "log-line")
+}
+
+func TestLogEndpointRefreshesEmptyCache(t *testing.T) {
+	s := NewSerializedStore()
+	// Create a just-submitted record with empty Result.
+	rec := &SubmissionRecord{ID: "sub-1", ProblemID: "p1", Principal: "alice"}
+	s.SaveSubmission(rec)
+	streamer := &fakeLogStreamer{}
+	h := NewHandler(s, nil, streamer)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/submissions/logs/sub-1", nil)
+	rec2 := httptest.NewRecorder()
+	h.ServeHTTP(rec2, req)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec2.Code, rec2.Body.String())
+	}
+	// Verify streamer received correct IDs
+	if streamer.lastSubID != "sub-1" {
+		t.Errorf("submission ID: got %q, want sub-1", streamer.lastSubID)
+	}
+	if streamer.lastCtrID != "ctr-real-1" {
+		t.Errorf("container ID: got %q, want ctr-real-1", streamer.lastCtrID)
+	}
+}
+
+func TestLogEndpointQueryError(t *testing.T) {
+	s := NewSerializedStore()
+	rec2 := &SubmissionRecord{ID: "sub-err", ProblemID: "p1", Principal: "alice"}
+	s.SaveSubmission(rec2)
+	failing := &fakeSubmission{err: fmt.Errorf("CSOJ down")}
+	h := NewHandler(s, nil, failing)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/submissions/logs/sub-err", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("expected 502, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestLogEndpointNoContainers(t *testing.T) {
+	s := NewSerializedStore()
+	// Record with terminal result but no containers
+	rec3 := &SubmissionRecord{ID: "sub-nc", ProblemID: "p1", Principal: "alice",
+		Result: SubmissionResult{SubmissionID: "sub-nc", Status: "Success"},
+	}
+	s.SaveSubmission(rec3)
+	emptyResult := &fakeSubmission{result: &SubmissionResult{SubmissionID: "sub-nc", Status: "Success"}}
+	h := NewHandler(s, nil, emptyResult)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/submissions/logs/sub-nc", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Errorf("expected 409, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// Round 10: Strict identity regression tests
+
+func TestReattachIncompleteLabelsSameOwner(t *testing.T) {
+	s := NewSerializedStore()
+	// Alice has active cs102/p2 service
+	// Alice has stale volume for cs101/p1 (different course) and missing problem
+	d := &fakeDiscovery{
+		containers: []DiscoveryContainer{
+			{ID: "c1", Name: "svc-alice", Host: "h", Port: 22,
+				Labels: map[string]string{"platform.io/kind": "service", "platform.io/owner": "alice", "platform.io/course": "cs102", "platform.io/problem": "p2"}},
+		},
+		volumes: []DiscoveryVolume{
+			{Name: "svc-alice-cs101-p1-vol", Driver: "local",
+				Labels: map[string]string{"platform.io/kind": "service", "platform.io/owner": "alice", "platform.io/course": "cs101", "platform.io/problem": "p1"}},
+			{Name: "svc-alice-noproblem-vol", Driver: "local",
+				Labels: map[string]string{"platform.io/kind": "service", "platform.io/owner": "alice", "platform.io/course": "cs102"}},
+		},
+	}
+	result, err := ReattachLeases(s, d)
+	if err != nil { t.Fatalf("ReattachLeases: %v", err) }
+	if result.Reattached != 1 { t.Errorf("reattached: %d", result.Reattached) }
+	// Both stale volumes should be orphaned
+	if result.OrphanVolumes != 2 {
+		t.Errorf("orphan volumes: expected 2 (different course + missing problem), got %d", result.OrphanVolumes)
+	}
+}
