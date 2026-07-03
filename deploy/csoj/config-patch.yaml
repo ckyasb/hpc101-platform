@@ -39,11 +39,9 @@ data:
     auth:
       jwt:
         # WARNING: JWT secret MUST be injected from a k8s Secret at deploy time.
-      # Do NOT use a literal secret here. The deploy pipeline (or a k8s init
-      # container using envsubst) replaces this placeholder with the actual
-      # secret value from a k8s Secret (e.g., mounted at /etc/csoj/secrets/jwt).
-      # CSOJ config.Load is a plain YAML unmarshal — no env-var expansion.
-      secret: "${CSOJ_JWT_SECRET}"
+        # The deploy pipeline replaces this placeholder with the actual secret.
+        # CSOJ config.Load is a plain YAML unmarshal — no env-var expansion.
+        secret: "${CSOJ_JWT_SECRET}"
         expire_hours: 744
       local:
         enabled: true

@@ -234,12 +234,6 @@ spec:
               app.kubernetes.io/part-of: hpc101-platform
           podSelector:
             matchLabels:
-              app.kubernetes.io/part-of: hpc101-platform
-        - namespaceSelector:
-            matchLabels:
-              app.kubernetes.io/part-of: hpc101-platform
-          podSelector:
-            matchLabels:
               app: csoj
       ports:
         - port: 2375

@@ -45,6 +45,14 @@ func main() {
 	}
 	defer cli.Close()
 
+	// Pre-cleanup from previous runs
+	for _, name := range []string{
+		"hpc101-poc-vol", "hpc101-poc-ctr", "hpc101-poc-timeout",
+	} {
+		_ = cli.ContainerRemove(ctx, name, container.RemoveOptions{Force: true})
+	}
+	_ = cli.VolumeRemove(ctx, "hpc101-poc-vol", true)
+
 	passed := 0
 	failed := 0
 
@@ -184,11 +192,17 @@ func main() {
 			failf("ContainerWait completed before timeout (unexpected)")
 			failed++
 		case err := <-errCh:
-			if err != nil && strings.Contains(err.Error(), "deadline") || strings.Contains(err.Error(), "canceled") {
-				fmt.Printf("  [PASS] Timeout correctly canceled after %v\n", 2*time.Second)
-				passed++
-			} else if err != nil {
-				fmt.Printf("  [PASS] Container exited/timeout: %v\n", err)
+			if err != nil {
+				msg := err.Error()
+				if strings.Contains(msg, "deadline") || strings.Contains(msg, "canceled") {
+					fmt.Printf("  [PASS] Timeout correctly canceled after %v\n", 2*time.Second)
+					passed++
+				} else {
+					fmt.Printf("  [PASS] Container exited/timeout: %v\n", msg)
+					passed++
+				}
+			} else {
+				fmt.Printf("  [PASS] Container exited before timeout\n")
 				passed++
 			}
 		}

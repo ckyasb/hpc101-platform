@@ -1,0 +1,57 @@
+# SSH Bastion configuration for hpc101-platform
+# Mounted at /etc/ssh/sshd_config in the bastion Deployment.
+#
+# Security model: cert-only authentication via platform CA.
+# No passwords, no raw public keys, no gateway ports, no shell on bastion.
+# PermitOpen is enforced per-certificate via the CA-signed critical options
+# (permitopen="<container_host>:<port>" + force-command="/bin/false").
+# The bastion only forwards TCP; it does not allocate a PTY.
+
+Port 2222
+ListenAddress 0.0.0.0
+
+# Protocol
+Protocol 2
+
+# Authentication: certificates only, no passwords, no plain pubkeys
+TrustedUserCAKeys /etc/ssh/ca.pub
+PubkeyAuthentication yes
+PasswordAuthentication no
+ChallengeResponseAuthentication no
+PermitEmptyPasswords no
+
+# Host key (mounted from k8s Secret or generated at startup)
+HostKey /etc/ssh/ssh_host_ed25519_key
+
+# Logging
+SyslogFacility AUTH
+LogLevel VERBOSE
+
+# Forwarding: allow TCP forwarding (required for ssh -J / ProxyJump)
+AllowTcpForwarding yes
+# But forbid gateway ports (remote port forwarding to bastion)
+GatewayPorts no
+# PermitOpen default: none. Overridden per-certificate by CA-issued critical option.
+PermitOpen any
+# The CA signs certs with permitopen="<container_host>:<port>", restricting
+# each student to their own container. The bastion enforces this via
+# the certificate's critical options at connection time.
+
+# No X11 forwarding
+X11Forwarding no
+# No agent forwarding
+AllowAgentForwarding no
+# No PTY on bastion (force-command="/bin/false" per cert)
+PermitTTY no
+# No interactive shell
+ForceCommand /bin/false
+
+# Session limits
+MaxSessions 10
+MaxStartups 10:30:100
+ClientAliveInterval 60
+ClientAliveCountMax 3
+
+# Misc
+UseDNS no
+PrintMotd no

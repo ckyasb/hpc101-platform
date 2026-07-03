@@ -1,0 +1,163 @@
+# SSH Bastion Deployment for hpc101-platform
+#
+# Single bastion sshd authenticates students via platform-CA-signed
+# short-lived SSH certificates and forwards (ssh -J / ProxyJump) to
+# the student's allocated container sshd.
+#
+# Certificates carry critical options:
+#   permitopen="<container_host>:<port>" — single TCP target binding
+#   force-command="/bin/false"         — no interactive shell on bastion
+#
+# Per plan AC-2: bastion has no shell, no gateway-ports, cert-only auth.
+# VSCode Remote-SSH works with ProxyJump configured in ~/.ssh/config.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hpc101-bastion
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    app.kubernetes.io/part-of: hpc101-platform
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: bastion
+  namespace: hpc101-bastion
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bastion
+  namespace: hpc101-bastion
+  labels:
+    app: bastion
+    app.kubernetes.io/part-of: hpc101-platform
+spec:
+  type: ClusterIP
+  ports:
+    - name: ssh
+      port: 2222
+      targetPort: 2222
+      protocol: TCP
+  selector:
+    app: bastion
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bastion
+  namespace: hpc101-bastion
+  labels:
+    app: bastion
+    app.kubernetes.io/part-of: hpc101-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: bastion
+  template:
+    metadata:
+      labels:
+        app: bastion
+        app.kubernetes.io/part-of: hpc101-platform
+    spec:
+      serviceAccountName: bastion
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: sshd
+          # Minimal Alpine-based image with OpenSSH server
+          image: alpine:3.21
+          command:
+            - /bin/sh
+            - -c
+            - |
+              apk add --no-cache openssh-server &&
+              ssh-keygen -A &&
+              exec /usr/sbin/sshd -D -e -f /etc/ssh/sshd_config
+          ports:
+            - containerPort: 2222
+              name: ssh
+              protocol: TCP
+          volumeMounts:
+            - name: sshd-config
+              mountPath: /etc/ssh/sshd_config
+              subPath: sshd_config
+              readOnly: true
+            - name: ca-public-key
+              mountPath: /etc/ssh/ca.pub
+              subPath: ca.pub
+              readOnly: true
+            - name: ssh-host-key
+              mountPath: /etc/ssh/ssh_host_ed25519_key
+              subPath: ssh_host_ed25519_key
+              readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+            runAsNonRoot: false  # sshd needs root to bind to low port; could use 2222+setcap
+            readOnlyRootFilesystem: false  # apk + ssh-keygen -A need writes
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+          readinessProbe:
+            tcpSocket:
+              port: 2222
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 2222
+            initialDelaySeconds: 30
+            periodSeconds: 20
+      volumes:
+        - name: sshd-config
+          configMap:
+            name: bastion-sshd-config
+        - name: ca-public-key
+          secret:
+            secretName: bastion-ca-keys
+            items:
+              - key: ca.pub
+                path: ca.pub
+        - name: ssh-host-key
+          secret:
+            secretName: bastion-host-key
+            items:
+              - key: ssh_host_ed25519_key
+                path: ssh_host_ed25519_key
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bastion-sshd-config
+  namespace: hpc101-bastion
+data:
+  sshd_config: |
+    # See deploy/bastion/sshd_config for full config documentation.
+    Port 2222
+    Protocol 2
+    TrustedUserCAKeys /etc/ssh/ca.pub
+    PubkeyAuthentication yes
+    PasswordAuthentication no
+    ChallengeResponseAuthentication no
+    HostKey /etc/ssh/ssh_host_ed25519_key
+    LogLevel VERBOSE
+    AllowTcpForwarding yes
+    GatewayPorts no
+    PermitOpen any
+    X11Forwarding no
+    AllowAgentForwarding no
+    PermitTTY no
+    ForceCommand /bin/false
+    MaxSessions 10
+    ClientAliveInterval 60
+    ClientAliveCountMax 3

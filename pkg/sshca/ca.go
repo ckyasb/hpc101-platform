@@ -1,0 +1,151 @@
+// Package sshca provides SSH Certificate Authority operations for the
+// hpc101-platform bastion. Generates and loads Ed25519 CA keys, signs
+// short-lived user certificates with per-student container binding.
+//
+// Certificates carry critical options that restrict the user to their
+// allocated container only:
+//   - permitopen="<host>:<port>"  → single TCP forwarding target
+//   - force-command="/bin/false"  → no interactive shell on bastion
+//
+// The bastion's sshd_config trusts this CA (TrustedUserCAKeys) and
+// enforces cert-only authentication. Students use:
+//   ssh -J bastion user@container-host -p <port>
+//
+// VSCode Remote-SSH works with ProxyJump configured in ~/.ssh/config.
+package sshca
+
+import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/x509"
+	"encoding/pem"
+	"fmt"
+	"os"
+	"time"
+
+	"golang.org/x/crypto/ssh"
+)
+
+// CA holds the SSH certificate authority key and configuration.
+type CA struct {
+	signer    ssh.Signer
+	PublicKey ssh.PublicKey
+	rawKey    interface{} // underlying crypto private key for PEM export
+}
+
+// GenerateCA creates a new Ed25519 CA keypair and returns the CA signer.
+func GenerateCA() (*CA, error) {
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, fmt.Errorf("sshca: generate key: %w", err)
+	}
+
+	signer, err := ssh.NewSignerFromKey(priv)
+	if err != nil {
+		return nil, fmt.Errorf("sshca: new signer: %w", err)
+	}
+
+	return &CA{signer: signer, PublicKey: signer.PublicKey(), rawKey: priv}, nil
+}
+
+// LoadCA loads a CA from a PEM-encoded Ed25519 private key file.
+func LoadCA(privateKeyPath string) (*CA, error) {
+	data, err := os.ReadFile(privateKeyPath)
+	if err != nil {
+		return nil, fmt.Errorf("sshca: read key: %w", err)
+	}
+
+	block, _ := pem.Decode(data)
+	if block == nil {
+		return nil, fmt.Errorf("sshca: no PEM block found in %s", privateKeyPath)
+	}
+
+	key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("sshca: parse private key: %w", err)
+	}
+
+	signer, err := ssh.NewSignerFromKey(key)
+	if err != nil {
+		return nil, fmt.Errorf("sshca: new signer from loaded key: %w", err)
+	}
+
+	return &CA{signer: signer, PublicKey: signer.PublicKey()}, nil
+}
+
+// SavePrivateKey writes the CA's private key in PEM (PKCS8) format.
+// Only works for CA created via GenerateCA (which preserves the raw key).
+// For CA created via LoadCA, the key is already on disk.
+func (ca *CA) SavePrivateKey(path string) error {
+	if ca.rawKey == nil {
+		return fmt.Errorf("sshca: raw key not available; key was loaded, not generated — already on disk")
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(ca.rawKey)
+	if err != nil {
+		return fmt.Errorf("sshca: marshal pkcs8: %w", err)
+	}
+	block := &pem.Block{Type: "PRIVATE KEY", Bytes: der}
+	return os.WriteFile(path, pem.EncodeToMemory(block), 0600)
+}
+
+// SavePublicKey writes the CA's public key in OpenSSH authorized_keys format.
+func (ca *CA) SavePublicKey(path string) error {
+	data := ssh.MarshalAuthorizedKey(ca.PublicKey)
+	return os.WriteFile(path, data, 0644)
+}
+
+// SignUserCertRequest carries the parameters needed to sign a user certificate.
+type SignUserCertRequest struct {
+	// UserPublicKey is the student's SSH public key.
+	UserPublicKey ssh.PublicKey
+	// Principal is the identity (e.g., student username).
+	Principal string
+	// ValidDuration is how long the certificate is valid.
+	ValidDuration time.Duration
+	// ContainerHost is the hostname or IP of the student's container.
+	ContainerHost string
+	// ContainerPort is the SSH port on the student's container.
+	ContainerPort uint16
+}
+
+// SignUserCert signs a short-lived SSH user certificate with:
+//   - Key ID = principal
+//   - Critical option: permitopen="<host>:<port>" (single target)
+//   - Critical option: force-command="/bin/false" (no shell on bastion)
+//   - Valid from now until now+ValidDuration
+//
+// The certificate enables the user to SSH to the bastion and be forwarded
+// to their container. The bastion's PermittOpen enforces the certificate
+// binding — the user cannot forward to any other target.
+func (ca *CA) SignUserCert(req SignUserCertRequest) (*ssh.Certificate, error) {
+	if req.ValidDuration <= 0 {
+		return nil, fmt.Errorf("sshca: ValidDuration must be positive")
+	}
+	if req.ContainerHost == "" || req.ContainerPort == 0 {
+		return nil, fmt.Errorf("sshca: ContainerHost and ContainerPort are required")
+	}
+
+	serial := uint64(time.Now().UnixNano())
+
+	cert := &ssh.Certificate{
+		Key:             req.UserPublicKey,
+		Serial:          serial,
+		CertType:        ssh.UserCert,
+		KeyId:           req.Principal,
+		ValidPrincipals: []string{req.Principal},
+		ValidAfter:      uint64(time.Now().Unix()),
+		ValidBefore:     uint64(time.Now().Add(req.ValidDuration).Unix()),
+		Permissions: ssh.Permissions{
+			CriticalOptions: map[string]string{
+				"permitopen":    fmt.Sprintf("%s:%d", req.ContainerHost, req.ContainerPort),
+				"force-command": "/bin/false",
+			},
+		},
+	}
+
+	if err := cert.SignCert(rand.Reader, ca.signer); err != nil {
+		return nil, fmt.Errorf("sshca: sign cert: %w", err)
+	}
+
+	return cert, nil
+}

@@ -68,7 +68,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: csoj
-          # Built from vendor/csoj/cmd/CSOJ/ — replace with actual image
+          # Built via: docker build -f deploy/csoj/Dockerfile -t hpc101-platform/csoj:latest .
           image: hpc101-platform/csoj:latest
           command: ["/csoj", "-c", "/etc/csoj/config.yaml"]
           ports:
@@ -100,13 +100,10 @@ spec:
               cpu: "2"
               memory: "1Gi"
           readinessProbe:
-            httpGet:
-              path: /api/v1/ping
+            tcpSocket:
               port: 8080
             initialDelaySeconds: 5
             periodSeconds: 10
-        # Note: if CSOJ API doesn't expose /api/v1/ping,
-        # use tcpSocket on port 8080 instead.
       volumes:
         - name: config
           configMap:
