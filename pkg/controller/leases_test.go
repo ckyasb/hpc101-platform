@@ -571,3 +571,19 @@ func TestReattachLeases(t *testing.T) {
 		t.Errorf("lease not reattached: %v", l)
 	}
 }
+
+func TestReattachRejectsNonSvcPrefix(t *testing.T) {
+	s := NewSerializedStore()
+	d := &fakeDiscovery{containers: []DiscoveryContainer{
+		{ID: "ctr-1", Name: "csj-judge-1", Host: "10.0.0.5", Port: 2222,
+			Labels: map[string]string{"platform.io/kind": "service", "platform.io/owner": "alice"}},
+	}}
+
+	result := ReattachLeases(s, d)
+	if result.Reattached != 0 {
+		t.Errorf("csj- prefix should not be reattached: %d", result.Reattached)
+	}
+	if result.Orphaned != 1 {
+		t.Errorf("expected 1 orphan, got %d", result.Orphaned)
+	}
+}

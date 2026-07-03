@@ -21,6 +21,7 @@ func main() {
 	}
 	sub := newSubmissionService()
 	store := controller.NewSerializedStore()
+	controller.ReattachLeases(store, nil) // no runtime discovery client yet
 	drainer := &controller.NoopBastionDrainer{}
 	h := controller.NewHandlerWithDrainer(store, rt, sub, drainer)
 

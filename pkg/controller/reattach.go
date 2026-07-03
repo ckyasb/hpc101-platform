@@ -2,6 +2,7 @@ package controller
 
 import (
 	"log"
+	"strings"
 	"time"
 
 	"hpc101-platform/lease"
@@ -44,9 +45,9 @@ func ReattachLeases(store LeaseStore, client DiscoveryClient) ReattachResult {
 	var result ReattachResult
 	for _, c := range containers {
 		owner := c.Labels["platform.io/owner"]
-		if owner == "" || c.Name == "" {
+		if owner == "" || c.Name == "" || !strings.HasPrefix(c.Name, "svc-") {
 			result.Orphaned++
-			log.Printf("reattach: orphan container %s (missing owner or name)", c.ID)
+			log.Printf("reattach: orphan container %s (missing owner/name or not svc- prefixed)", c.ID)
 			continue
 		}
 
