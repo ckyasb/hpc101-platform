@@ -21,7 +21,17 @@ func main() {
 		log.Fatalf("controller: runtime adapter: %v", err)
 	}
 	sub := newSubmissionService()
-	store := controller.NewSerializedStore()
+	var store controller.ReleaseOps
+	if p := os.Getenv("HPC101_STORE_PATH"); p != "" {
+		fs, err := controller.NewFileStore(p)
+		if err != nil {
+			log.Fatalf("controller: file store: %v", err)
+		}
+		store = fs
+		log.Printf("controller: persistent store at %s", p)
+	} else {
+		store = controller.NewSerializedStore()
+	}
 	if disc, ok := interface{}(rt).(controller.DiscoveryClient); ok {
 		if _, err := controller.ReattachLeases(store, disc); err != nil {
 			log.Printf("reattach: %v", err)

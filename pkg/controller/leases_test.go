@@ -1004,6 +1004,9 @@ func TestProblemSyncNoMappingStore(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusInternalServerError {
 		t.Errorf("expected 500 for missing mapper, got %d", rec.Code)
+		if fs.lastProblem != "" {
+			t.Fatalf("adapter was called despite missing mapper: lastProblem=%s", fs.lastProblem)
+		}
 	}
 }
 
@@ -1049,5 +1052,78 @@ func TestProblemSyncMissingService(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Errorf("expected 503, got %d", rec.Code)
+	}
+}
+
+// Round 14: FileStore restart test
+
+func TestFileStoreRestart(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := tmpDir + "/state.json"
+
+	// Create first store and populate data.
+	fs1, err := NewFileStore(path)
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+
+	// Register a key.
+	if err := fs1.RegisterKey("alice", "ssh-rsa AAA..."); err != nil {
+		t.Fatalf("RegisterKey: %v", err)
+	}
+
+	// Create a lease.
+	l := lease.NewLease("alice", "ctr-1", "svc-alice", "10.0.0.1", 2222, 8*time.Hour, 30*time.Minute)
+	if err := fs1.UpsertLease(l); err != nil {
+		t.Fatalf("UpsertLease: %v", err)
+	}
+
+	// Save a submission.
+	rec := &SubmissionRecord{ID: "sub-1", ProblemID: "p1", Principal: "alice",
+		Result: SubmissionResult{SubmissionID: "sub-1", Status: "Success", Score: 100},
+	}
+	if err := fs1.SaveSubmission(rec); err != nil {
+		t.Fatalf("SaveSubmission: %v", err)
+	}
+
+	// Map a problem.
+	fs1.MapProblem("cs101", "c1", "p1", "c1--p1")
+
+	// Simulate restart: load a new store from the same file.
+	fs2, err := NewFileStore(path)
+	if err != nil {
+		t.Fatalf("NewFileStore (restart): %v", err)
+	}
+
+	// Verify key survived.
+	key, err := fs2.GetKey("alice")
+	if err != nil {
+		t.Fatalf("GetKey after restart: %v", err)
+	}
+	if key != "ssh-rsa AAA..." {
+		t.Errorf("key mismatch: %s", key)
+	}
+
+	// Verify lease survived.
+	l2, err := fs2.LookupByPrincipal("alice")
+	if err != nil || l2 == nil {
+		t.Fatalf("LookupByPrincipal after restart: %v", err)
+	}
+	if l2.ContainerID != "ctr-1" {
+		t.Errorf("lease container: %s", l2.ContainerID)
+	}
+
+	// Verify submission survived.
+	sub, err := fs2.GetSubmission("sub-1")
+	if err != nil {
+		t.Fatalf("GetSubmission after restart: %v", err)
+	}
+	if sub.Result.Score != 100 {
+		t.Errorf("score: %f", sub.Result.Score)
+	}
+
+	// Verify problem mapping survived.
+	if mid := fs2.ResolveProblem("cs101", "c1", "p1"); mid != "c1--p1" {
+		t.Errorf("problem mapping: got %q", mid)
 	}
 }
