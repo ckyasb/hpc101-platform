@@ -21,7 +21,7 @@ func getControllerURL() string {
 }
 
 type config struct {
-	SSHPublicKey  string `json:"ssh_public_key"`
+	SSHPublicKey   string `json:"ssh_public_key"`
 	PrivateKeyPath string `json:"private_key_path"`
 }
 
@@ -314,10 +314,14 @@ func fetchLogs(args []string) {
 		fatal("GET logs: %v", err)
 	}
 	defer resp.Body.Close()
-	_, err = io.Copy(os.Stdout, resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		fatal("read logs: %v", err)
 	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		fatal("logs: HTTP %d: %s", resp.StatusCode, body)
+	}
+	os.Stdout.Write(body)
 }
 
 type submitReq struct {

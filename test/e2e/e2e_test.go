@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func controllerURL() string {
@@ -50,11 +51,12 @@ func buildCLI(t *testing.T, dir string) string {
 	return binPath
 }
 
-func runCLI(t *testing.T, binPath, home string, args ...string) string {
+func runCLI(t *testing.T, binPath, home, principal string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command(binPath, args...)
 	cmd.Env = append(os.Environ(),
 		"HOME="+home,
+		"USER="+principal,
 		"CODOJO_CONTROLLER_URL="+controllerURL(),
 		"KUBECONFIG=",
 	)
@@ -77,6 +79,9 @@ func TestE2ECourseFlow(t *testing.T) {
 	}
 	binPath := buildCLI(t, home)
 
+	// Unique principal to avoid colliding with real leases/keys.
+	principal := "e2e-" + fmt.Sprintf("%d", time.Now().UnixNano()%100000)
+
 	course := os.Getenv("HPC101_E2E_COURSE")
 	if course == "" {
 		course = "cs101"
@@ -95,18 +100,25 @@ func TestE2ECourseFlow(t *testing.T) {
 	}
 
 	t.Run("register-key", func(t *testing.T) {
-		out := runCLI(t, binPath, home, "register-key", keyPath)
+		out := runCLI(t, binPath, home, principal, "register-key", keyPath)
 		t.Logf("register-key: %s", out)
 	})
 
 	t.Run("up", func(t *testing.T) {
-		out := runCLI(t, binPath, home, "up", image, course, problemID)
+		out := runCLI(t, binPath, home, principal, "up", image, course, problemID)
 		t.Logf("up: %s", out)
+		// Register cleanup immediately so the container is released even on
+		// mid-flow failure (problem sync, submit, score, logs, or ssh).
+		t.Cleanup(func() {
+			// Best-effort release; ignore errors since the flow may already
+			// have released or the controller may be unreachable.
+			_ = exec.Command(binPath, "release").Run()
+		})
 	})
 
 	var sshConfig string
 	t.Run("ssh-info", func(t *testing.T) {
-		sshConfig = runCLI(t, binPath, home, "ssh-info")
+		sshConfig = runCLI(t, binPath, home, principal, "ssh-info")
 		if !strings.Contains(sshConfig, "ProxyJump") {
 			t.Fatalf("ssh-info output missing ProxyJump:\n%s", sshConfig)
 		}
@@ -135,7 +147,7 @@ func TestE2ECourseFlow(t *testing.T) {
 		if err := os.WriteFile(solutionPath, []byte("int main(){return 0;}"), 0644); err != nil {
 			t.Fatalf("write solution: %v", err)
 		}
-		out := runCLI(t, binPath, home, "submit", course, contest, problemID, solutionPath)
+		out := runCLI(t, binPath, home, principal, "submit", course, contest, problemID, solutionPath)
 		t.Logf("submit: %s", out)
 		if idx := strings.Index(out, `"submission_id":"`); idx >= 0 {
 			rest := out[idx+len(`"submission_id":"`):]
@@ -153,7 +165,7 @@ func TestE2ECourseFlow(t *testing.T) {
 		if submissionID == "" {
 			t.Skip("no submission to score")
 		}
-		out := runCLI(t, binPath, home, "score", submissionID)
+		out := runCLI(t, binPath, home, principal, "score", submissionID)
 		t.Logf("score: %s", out)
 		if !strings.Contains(out, "score:") {
 			t.Fatalf("score output missing result:\n%s", out)
@@ -164,8 +176,15 @@ func TestE2ECourseFlow(t *testing.T) {
 		if submissionID == "" {
 			t.Skip("no submission to fetch logs for")
 		}
-		out := runCLI(t, binPath, home, "logs", submissionID)
+		out := runCLI(t, binPath, home, principal, "logs", submissionID)
 		t.Logf("logs: %s (length %d)", out, len(out))
+		// Logs must be non-empty and must not be a JSON error body.
+		if len(out) == 0 {
+			t.Fatal("logs output is empty; expected log lines")
+		}
+		if strings.HasPrefix(strings.TrimSpace(out), "{") && strings.Contains(out, "error") {
+			t.Fatalf("logs returned a JSON error instead of log lines: %s", out)
+		}
 	})
 
 	t.Run("ssh-j", func(t *testing.T) {
@@ -190,7 +209,7 @@ func TestE2ECourseFlow(t *testing.T) {
 	})
 
 	t.Run("release", func(t *testing.T) {
-		out := runCLI(t, binPath, home, "release")
+		out := runCLI(t, binPath, home, principal, "release")
 		t.Logf("release: %s", out)
 	})
 }
