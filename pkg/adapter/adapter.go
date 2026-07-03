@@ -77,6 +77,19 @@ func newCSOJError(method, path string, status int, env csjResponse) *CSOJError {
 	return &CSOJError{Method: method, Path: path, HTTPStatus: status, Code: env.Code, Message: env.Message}
 }
 
+// validateEnvelope checks HTTP status and CSOJ envelope code.
+// Returns the parsed response on success, or *CSOJError on failure.
+func validateEnvelope(method, path string, resp *http.Response, body []byte) (*csjResponse, error) {
+	var env csjResponse
+	if err := json.Unmarshal(body, &env); err != nil {
+		return nil, fmt.Errorf("adapter: parse %s %s: %w", method, path, err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 || env.Code != 0 {
+		return nil, newCSOJError(method, path, resp.StatusCode, env)
+	}
+	return &env, nil
+}
+
 // CSOJSONNumber handles CSOJ scores that may be encoded as int or float64.
 type CSOJSONNumber float64
 

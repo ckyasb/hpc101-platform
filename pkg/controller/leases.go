@@ -49,9 +49,9 @@ type ContainerCreator interface {
 
 // Handler serves the controller HTTP API.
 type Handler struct {
-	store     LeaseStore
-	runtime   ContainerCreator
-	mux       *http.ServeMux
+	store   LeaseStore
+	runtime ContainerCreator
+	mux     *http.ServeMux
 }
 
 // NewHandler creates a controller API handler.
@@ -59,6 +59,7 @@ func NewHandler(store LeaseStore, runtime ContainerCreator) *Handler {
 	h := &Handler{store: store, runtime: runtime, mux: http.NewServeMux()}
 	h.mux.HandleFunc("/api/v1/leases", h.handleLeases)
 	h.mux.HandleFunc("/api/v1/services", h.handleCreateService)
+	h.mux.HandleFunc("/api/v1/release", h.handleRelease)
 	h.mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
@@ -164,4 +165,31 @@ func (h *Handler) handleCreateService(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(resp)
+}
+
+func (h *Handler) handleRelease(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	principal := r.URL.Query().Get("principal")
+	if !principalPattern.MatchString(principal) {
+		http.Error(w, `{"error":"invalid principal"}`, http.StatusBadRequest)
+		return
+	}
+	l, err := h.store.LookupByPrincipal(principal)
+	if err != nil || l == nil {
+		http.Error(w, `{"error":"no active lease"}`, http.StatusNotFound)
+		return
+	}
+	if err := l.ExecuteRelease(func(s lease.ReleaseState) error { return nil }); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
+	if err := h.store.UpsertLease(l); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": string(l.State)})
 }

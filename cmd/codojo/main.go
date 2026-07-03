@@ -5,12 +5,41 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 )
 
-const controllerURL = "http://controller.hpc101-platform.svc.cluster.local:8080"
+func getControllerURL() string {
+	if u := os.Getenv("CODOJO_CONTROLLER_URL"); u != "" {
+		return u
+	}
+	return "http://controller.hpc101-platform.svc.cluster.local:8080"
+}
+
+type config struct {
+	SSHPublicKey string `json:"ssh_public_key"`
+}
+
+func loadConfig() *config {
+	p := filepath.Join(os.Getenv("HOME"), ".codojo", "config.json")
+	d, err := os.ReadFile(p)
+	if err != nil {
+		return &config{}
+	}
+	var c config
+	json.Unmarshal(d, &c)
+	return &c
+}
+
+type serviceReq struct {
+	Principal string `json:"principal"`
+	Image     string `json:"image"`
+	SSHKey    string `json:"ssh_key"`
+	Course    string `json:"course"`
+	Problem   string `json:"problem"`
+}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -23,102 +52,145 @@ func main() {
 	case "up":
 		up(os.Args[2:])
 	case "ssh-info":
-		sshInfo(os.Args[2:])
+		sshInfo()
 	case "release":
-		fmt.Println("release: not yet implemented")
+		release()
 	case "problem":
-		fmt.Println("problem: not yet implemented")
+		listProblems()
 	case "score":
-		fmt.Println("score: not yet implemented")
+		showScores()
 	case "submit":
-		fmt.Println("submit: not yet implemented")
+		submit(os.Args[2:])
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command: %s\n", os.Args[1])
+		fmt.Fprintf(os.Stderr, "unknown: %s\n", os.Args[1])
 		os.Exit(1)
 	}
 }
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "codojo: hpc101-platform CLI (no kubeconfig)")
-	fmt.Fprintln(os.Stderr, "  register-key <path>")
-	fmt.Fprintln(os.Stderr, "  up <image> [course] [problem]")
-	fmt.Fprintln(os.Stderr, "  ssh-info")
-	fmt.Fprintln(os.Stderr, "  release")
-	fmt.Fprintln(os.Stderr, "  problem / score / submit")
+	for _, s := range []string{
+		"  register-key <path>",
+		"  up <image> [course] [problem]",
+		"  ssh-info", "  release",
+		"  problem", "  score",
+		"  submit <problem-id> <file>...",
+	} {
+		fmt.Fprintln(os.Stderr, s)
+	}
 }
 
 func registerKey(args []string) {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: register-key <path-to-public-key>")
-		os.Exit(1)
+		fatal("usage: register-key <path>")
 	}
-	keyData, err := os.ReadFile(args[0])
+	d, err := os.ReadFile(args[0])
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error reading key: %v\n", err)
-		os.Exit(1)
+		fatal("read key: %v", err)
 	}
-	key := strings.TrimSpace(string(keyData))
-	configDir := filepath.Join(os.Getenv("HOME"), ".codojo")
-	os.MkdirAll(configDir, 0700)
-	cfg := map[string]string{"ssh_public_key": key}
-	cfgData, _ := json.MarshalIndent(cfg, "", "  ")
-	os.WriteFile(filepath.Join(configDir, "config.json"), cfgData, 0600)
+	key := strings.TrimSpace(string(d))
+	dir := filepath.Join(os.Getenv("HOME"), ".codojo")
+	os.MkdirAll(dir, 0700)
+	b, _ := json.MarshalIndent(config{SSHPublicKey: key}, "", "  ")
+	os.WriteFile(filepath.Join(dir, "config.json"), b, 0600)
 	fmt.Println("key registered")
 }
 
 func up(args []string) {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: up <image> [course] [problem]")
-		os.Exit(1)
+		fatal("usage: up <image> [course] [problem]")
 	}
-	image := args[0]
-	course, problem := "default", "default"
+	req := serviceReq{
+		Principal: os.Getenv("USER"),
+		Image:     args[0],
+		SSHKey:    loadConfig().SSHPublicKey,
+		Course:    "default",
+		Problem:   "default",
+	}
 	if len(args) >= 2 {
-		course = args[1]
+		req.Course = args[1]
 	}
 	if len(args) >= 3 {
-		problem = args[2]
+		req.Problem = args[2]
 	}
-	principal := os.Getenv("USER")
-	cfgPath := filepath.Join(os.Getenv("HOME"), ".codojo", "config.json")
-	cfgData, _ := os.ReadFile(cfgPath)
-	var cfg map[string]string
-	json.Unmarshal(cfgData, &cfg)
-	body := fmt.Sprintf(`{"principal":"%s","image":"%s","ssh_key":"%s","course":"%s","problem":"%s"}`,
-		principal, image, cfg["ssh_public_key"], course, problem)
-	resp, err := http.Post(controllerURL+"/api/v1/services", "application/json", strings.NewReader(body))
+	body, _ := json.Marshal(req)
+	resp, err := http.Post(getControllerURL()+"/api/v1/services", "application/json", strings.NewReader(string(body)))
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
+		fatal("POST services: %v", err)
 	}
 	defer resp.Body.Close()
-	respBody, _ := io.ReadAll(resp.Body)
+	b, _ := io.ReadAll(resp.Body)
 	var r map[string]interface{}
-	json.Unmarshal(respBody, &r)
+	json.Unmarshal(b, &r)
 	if resp.StatusCode == 201 {
 		fmt.Printf("ready: %s:%v\n", r["host"], r["port"])
 	} else {
-		fmt.Fprintf(os.Stderr, "error: %s\n", respBody)
-		os.Exit(1)
+		fatal("error: %s", b)
 	}
 }
 
-func sshInfo(args []string) {
-	principal := os.Getenv("USER")
-	u := fmt.Sprintf("%s/api/v1/leases?principal=%s", controllerURL, principal)
-	resp, err := http.Get(u)
+func sshInfo() {
+	p := url.QueryEscape(os.Getenv("USER"))
+	resp, err := http.Get(getControllerURL() + "/api/v1/leases?principal=" + p)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
+		fatal("GET leases: %v", err)
 	}
 	defer resp.Body.Close()
-	respBody, _ := io.ReadAll(resp.Body)
+	b, _ := io.ReadAll(resp.Body)
 	var r map[string]interface{}
-	json.Unmarshal(respBody, &r)
+	json.Unmarshal(b, &r)
 	if resp.StatusCode == 200 {
-		fmt.Printf("bastion: %s port %v\n  ssh -J bastion user@%s\n", r["container_host"], r["container_port"], r["container_host"])
+		fmt.Printf("bastion: %s:%v\n", r["container_host"], r["container_port"])
 	} else {
-		fmt.Fprintln(os.Stderr, "no active environment")
-		os.Exit(1)
+		fatal("no active environment")
 	}
+}
+
+func release() {
+	p := url.QueryEscape(os.Getenv("USER"))
+	req, _ := http.NewRequest(http.MethodDelete, getControllerURL()+"/api/v1/release?principal="+p, nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		fatal("DELETE release: %v", err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	var r map[string]string
+	json.Unmarshal(b, &r)
+	if resp.StatusCode == 200 {
+		fmt.Printf("released: %s\n", r["status"])
+	} else {
+		fatal("error: %s", b)
+	}
+}
+
+func listProblems() {
+	fmt.Println("no problems configured")
+}
+
+func showScores() {
+	p := url.QueryEscape(os.Getenv("USER"))
+	resp, err := http.Get(getControllerURL() + "/api/v1/leases?principal=" + p)
+	if err != nil {
+		fatal("GET leases: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		fmt.Println("no scores")
+		return
+	}
+	fmt.Println("scores unavailable (CSOJ adapter pending)")
+}
+
+func submit(args []string) {
+	if len(args) < 2 {
+		fatal("usage: submit <problem-id> <file>...")
+	}
+	fmt.Printf("submitting %v to problem %s\n", args[1:], args[0])
+	fmt.Println("submit pending CSOJ adapter integration")
+}
+
+func fatal(format string, args ...interface{}) {
+	fmt.Fprintf(os.Stderr, format+"\n", args...)
+	os.Exit(1)
 }
