@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"fmt"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -28,4 +29,31 @@ func GenerateUserKey() (ssh.Signer, ssh.PublicKey, error) {
 // suitable for writing to an id_ecdsa-cert.pub or similar file.
 func MarshalCert(cert *ssh.Certificate) []byte {
 	return ssh.MarshalAuthorizedKey(cert)
+}
+
+// ParsePublicKey parses an OpenSSH authorized_keys format public key.
+func ParsePublicKey(pubKeyStr string) (ssh.PublicKey, error) {
+	key, _, _, _, err := ssh.ParseAuthorizedKey([]byte(pubKeyStr))
+	if err != nil {
+		return nil, fmt.Errorf("sshca: parse public key: %w", err)
+	}
+	return key, nil
+}
+
+// SignUserCertFromStrings is a convenience wrapper that takes public key and
+// principal as strings, signs a cert, and returns the PEM-encoded result.
+func (ca *CA) SignUserCertFromStrings(pubKeyStr, principal string, validHours int) (string, error) {
+	pubKey, err := ParsePublicKey(pubKeyStr)
+	if err != nil {
+		return "", err
+	}
+	cert, err := ca.SignUserCert(SignUserCertRequest{
+		UserPublicKey: pubKey,
+		Principal:     principal,
+		ValidDuration: time.Duration(validHours) * time.Hour,
+	})
+	if err != nil {
+		return "", err
+	}
+	return string(MarshalCert(cert)), nil
 }

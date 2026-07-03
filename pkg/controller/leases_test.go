@@ -169,8 +169,10 @@ func TestHandleLeasesNoActiveLease(t *testing.T) {
 type fakeSubmission struct {
 	lastProblemID string
 	lastFiles     map[string][]byte
+	lastQueryID   string
 	err           error
 	id            string
+	result        *SubmissionResult
 }
 
 func (f *fakeSubmission) Submit(ctx context.Context, problemID string, files map[string][]byte) (string, error) {
@@ -183,6 +185,17 @@ func (f *fakeSubmission) Submit(ctx context.Context, problemID string, files map
 		return "sub-123", nil
 	}
 	return f.id, nil
+}
+
+func (f *fakeSubmission) QueryResult(ctx context.Context, submissionID string) (*SubmissionResult, error) {
+	f.lastQueryID = submissionID
+	if f.err != nil {
+		return nil, f.err
+	}
+	if f.result != nil {
+		return f.result, nil
+	}
+	return &SubmissionResult{SubmissionID: submissionID, Status: "Queued"}, nil
 }
 
 func TestSubmitHandlerSuccess(t *testing.T) {

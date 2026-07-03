@@ -3,13 +3,14 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/mount"
-	"strconv"
-
-	"github.com/docker/docker/api/types/nat"
 	"github.com/docker/docker/client"
+	"github.com/docker/go-connections/nat"
 )
 
 type Client struct {
@@ -66,7 +67,7 @@ func (c *Client) CreateContainer(ctx context.Context, req CreateContainerRequest
 	}
 	hostCfg := &container.HostConfig{
 		PortBindings: nat.PortMap{
-			"2222/tcp": []nat.PortBinding{{HostIP: "0.0.0.0", HostPort: "0"}}, // auto-allocate
+			"2222/tcp": []nat.PortBinding{{HostIP: "0.0.0.0", HostPort: "0"}},
 		},
 		Mounts: []mount.Mount{{
 			Type:   mount.TypeTmpfs,
@@ -135,39 +136,45 @@ func safePrefix(s string, n int) string {
 	return s[:n]
 }
 
-
-func (c *Client) ListContainers(ctx context.Context, labels map[string]string) ([]DiscoveredContainer, error) {
-	filters := make([]string, 0, len(labels))
-	for k, v := range labels {
-		filters = append(filters, fmt.Sprintf("%s=%s", k, v))
-	}
-	containers, err := c.cli.ContainerList(ctx, container.ListOptions{
-		All: true,
-		Filters: filters,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("runtime: list containers: %w", err)
-	}
-	result := make([]DiscoveredContainer, 0, len(containers))
-	for _, ctr := range containers {
-		if len(ctr.Names) == 0 || len(ctr.Ports) == 0 {
-			continue
-		}
-		result = append(result, DiscoveredContainer{
-			ID:     ctr.ID,
-			Name:   strings.TrimPrefix(ctr.Names[0], "/"),
-			Host:   "podman-runtime.hpc101-runtime.svc.cluster.local",
-			Port:   ctr.Ports[0].PublicPort,
-			Labels: ctr.Labels,
-		})
-	}
-	return result, nil
-}
-
+// DiscoveredContainer represents a container found during discovery.
 type DiscoveredContainer struct {
 	ID     string
 	Name   string
 	Host   string
 	Port   uint16
 	Labels map[string]string
+}
+
+// ListContainers returns containers matching the given labels.
+// Used by the controller for restart reattach and orphan discovery.
+func (c *Client) ListContainers(ctx context.Context, labels map[string]string) ([]DiscoveredContainer, error) {
+	filterArgs := filters.NewArgs()
+	for k, v := range labels {
+		filterArgs.Add(k, v)
+	}
+	containers, err := c.cli.ContainerList(ctx, container.ListOptions{
+		All:     true,
+		Filters: filterArgs,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("runtime: list containers: %w", err)
+	}
+	result := make([]DiscoveredContainer, 0, len(containers))
+	for _, ctr := range containers {
+		if len(ctr.Names) == 0 {
+			continue
+		}
+		port := uint16(0)
+		if len(ctr.Ports) > 0 {
+			port = ctr.Ports[0].PublicPort
+		}
+		result = append(result, DiscoveredContainer{
+			ID:     ctr.ID,
+			Name:   strings.TrimPrefix(ctr.Names[0], "/"),
+			Host:   "podman-runtime.hpc101-runtime.svc.cluster.local",
+			Port:   port,
+			Labels: ctr.Labels,
+		})
+	}
+	return result, nil
 }

@@ -10,8 +10,11 @@ import (
 	"hpc101-platform/controller"
 )
 
+// adapterSubmission wraps adapter.SubmissionService to satisfy
+// controller.SubmissionService. It bridges the type gap between the
+// adapter's SubmissionResult and controller's SubmissionResult.
 type adapterSubmission struct {
-	client *adapter.Client
+	svc *adapter.SubmissionService
 }
 
 func newSubmissionService() controller.SubmissionService {
@@ -21,12 +24,24 @@ func newSubmissionService() controller.SubmissionService {
 	}
 	token := os.Getenv("CSOJ_JWT_TOKEN")
 	c := adapter.NewClient(baseURL, token)
-	return &adapterSubmission{client: c}
+	return &adapterSubmission{svc: adapter.NewSubmissionService(c)}
 }
 
 func (s *adapterSubmission) Submit(ctx context.Context, problemID string, files map[string][]byte) (string, error) {
-	return s.client.Submit(ctx, adapter.SubmitRequest{
-		ProblemID: problemID,
-		Files:     files,
-	})
+	return s.svc.Submit(ctx, problemID, files)
+}
+
+func (s *adapterSubmission) QueryResult(ctx context.Context, submissionID string) (*controller.SubmissionResult, error) {
+	r, err := s.svc.QueryResult(ctx, submissionID)
+	if err != nil {
+		return nil, err
+	}
+	return &controller.SubmissionResult{
+		SubmissionID: r.SubmissionID,
+		ProblemID:    r.ProblemID,
+		Status:       r.Status,
+		Score:        r.Score,
+		Performance:  r.Performance,
+		Info:         r.Info,
+	}, nil
 }

@@ -373,3 +373,49 @@ func (c *Client) upsertProblem(ctx context.Context, rec ContestRecord) error {
 	}
 	return err
 }
+
+// SubmissionService is a thin wrapper that adapts adapter.Client to the
+// controller.SubmissionService interface for use by the controller HTTP handler.
+type SubmissionService struct {
+	client *Client
+}
+
+// NewSubmissionService creates a controller-compatible submission service.
+func NewSubmissionService(client *Client) *SubmissionService {
+	return &SubmissionService{client: client}
+}
+
+// Submit implements the controller submission interface.
+func (s *SubmissionService) Submit(ctx context.Context, problemID string, files map[string][]byte) (string, error) {
+	return s.client.Submit(ctx, SubmitRequest{ProblemID: problemID, Files: files})
+}
+
+// QueryResult implements the controller submission interface by calling the CSOJ API.
+func (s *SubmissionService) QueryResult(ctx context.Context, submissionID string) (*SubmissionResult, error) {
+	sub, err := s.client.QueryResult(ctx, submissionID)
+	if err != nil {
+		return nil, err
+	}
+	info := ""
+	if sub.Info != nil {
+		info = string(sub.Info)
+	}
+	return &SubmissionResult{
+		SubmissionID: sub.ID,
+		ProblemID:    sub.ProblemID,
+		Status:       sub.Status,
+		Score:        float64(sub.Score),
+		Performance:  float64(sub.Performance),
+		Info:         info,
+	}, nil
+}
+
+// SubmissionResult is the query result type for the controller interface.
+type SubmissionResult struct {
+	SubmissionID string  `json:"submission_id"`
+	ProblemID    string  `json:"problem_id"`
+	Status       string  `json:"status"`
+	Score        float64 `json:"score"`
+	Performance  float64 `json:"performance"`
+	Info         string  `json:"info,omitempty"`
+}

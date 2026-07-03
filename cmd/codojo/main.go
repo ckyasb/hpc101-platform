@@ -92,18 +92,28 @@ func registerKey(args []string) {
 		fatal("read key: %v", err)
 	}
 	key := strings.TrimSpace(string(d))
+	principal := os.Getenv("USER")
+
+	// Register with the controller
+	payload, _ := json.Marshal(map[string]string{"principal": principal, "public_key": key})
+	resp, err := http.Post(getControllerURL()+"/api/v1/keys", "application/json", strings.NewReader(string(payload)))
+	if err != nil {
+		fatal("register key: %v", err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusCreated {
+		fatal("register key failed: %s", b)
+	}
+
+	// Also save locally for reference
 	dir := filepath.Join(os.Getenv("HOME"), ".codojo")
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		fatal("mkdir: %v", err)
 	}
-	b, err := json.MarshalIndent(config{SSHPublicKey: key}, "", "  ")
-	if err != nil {
-		fatal("marshal: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "config.json"), b, 0600); err != nil {
-		fatal("write config: %v", err)
-	}
-	fmt.Println("key registered")
+	cfgB, _ := json.MarshalIndent(config{SSHPublicKey: key}, "", "  ")
+	os.WriteFile(filepath.Join(dir, "config.json"), cfgB, 0600)
+	fmt.Println("key registered with controller")
 }
 
 func up(args []string) {
@@ -137,6 +147,21 @@ func up(args []string) {
 	json.Unmarshal(b, &r)
 	if resp.StatusCode == 201 {
 		fmt.Printf("ready: %s:%v\n", r["host"], r["port"])
+
+		// Save the signed certificate if returned
+		if cert, ok := r["certificate"].(string); ok && cert != "" {
+			dir := filepath.Join(os.Getenv("HOME"), ".codojo")
+			os.MkdirAll(dir, 0700)
+			certPath := filepath.Join(dir, req.Principal+"-key-cert.pub")
+			if err := os.WriteFile(certPath, []byte(cert), 0600); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: save cert: %v\n", err)
+			} else {
+				fmt.Fprintf(os.Stderr, "cert saved: %s\n", certPath)
+			}
+		}
+		if warn, ok := r["cert_warning"].(string); ok {
+			fmt.Fprintf(os.Stderr, "warning: %s\n", warn)
+		}
 	} else {
 		fatal("error: %s", b)
 	}
@@ -144,16 +169,21 @@ func up(args []string) {
 
 func sshInfo() {
 	p := url.QueryEscape(os.Getenv("USER"))
-	resp, err := http.Get(getControllerURL() + "/api/v1/leases?principal=" + p)
+	resp, err := http.Get(getControllerURL() + "/api/v1/ssh-info?principal=" + p)
 	if err != nil {
-		fatal("GET leases: %v", err)
+		fatal("GET ssh-info: %v", err)
 	}
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(resp.Body)
 	var r map[string]interface{}
 	json.Unmarshal(b, &r)
 	if resp.StatusCode == 200 {
-		fmt.Printf("bastion: %s:%v\n", r["container_host"], r["container_port"])
+		if cfg, ok := r["ssh_config"].(string); ok {
+			fmt.Print(cfg)
+		} else {
+			fmt.Printf("bastion: %s:%v container: %s:%v\n",
+				r["bastion_host"], r["bastion_port"], r["container_host"], r["container_port"])
+		}
 	} else {
 		fatal("no active environment")
 	}
