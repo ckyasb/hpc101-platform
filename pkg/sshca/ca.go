@@ -102,27 +102,22 @@ type SignUserCertRequest struct {
 	Principal string
 	// ValidDuration is how long the certificate is valid.
 	ValidDuration time.Duration
-	// ContainerHost is the hostname or IP of the student's container.
-	ContainerHost string
-	// ContainerPort is the SSH port on the student's container.
-	ContainerPort uint16
 }
 
 // SignUserCert signs a short-lived SSH user certificate with:
 //   - Key ID = principal
-//   - Critical option: permitopen="<host>:<port>" (single target)
-//   - Critical option: force-command="/bin/false" (no shell on bastion)
+//   - Critical option: force-command="/bin/false" (valid OpenSSH user-cert option;
+//     prevents interactive shell on bastion)
 //   - Valid from now until now+ValidDuration
 //
-// The certificate enables the user to SSH to the bastion and be forwarded
-// to their container. The bastion's PermittOpen enforces the certificate
-// binding — the user cannot forward to any other target.
+// Container target binding is NOT in the certificate. It is enforced by the
+// bastion's AuthorizedPrincipalsCommand, which queries the platform lease store
+// and returns "permitopen=\"host:port\" <principal>". This is the correct
+// mechanism — permitopen is an authorized_keys/sshd_config option, not a
+// valid user certificate critical option, and would cause cert rejection.
 func (ca *CA) SignUserCert(req SignUserCertRequest) (*ssh.Certificate, error) {
 	if req.ValidDuration <= 0 {
 		return nil, fmt.Errorf("sshca: ValidDuration must be positive")
-	}
-	if req.ContainerHost == "" || req.ContainerPort == 0 {
-		return nil, fmt.Errorf("sshca: ContainerHost and ContainerPort are required")
 	}
 
 	serial := uint64(time.Now().UnixNano())
@@ -137,7 +132,6 @@ func (ca *CA) SignUserCert(req SignUserCertRequest) (*ssh.Certificate, error) {
 		ValidBefore:     uint64(time.Now().Add(req.ValidDuration).Unix()),
 		Permissions: ssh.Permissions{
 			CriticalOptions: map[string]string{
-				"permitopen":    fmt.Sprintf("%s:%d", req.ContainerHost, req.ContainerPort),
 				"force-command": "/bin/false",
 			},
 		},

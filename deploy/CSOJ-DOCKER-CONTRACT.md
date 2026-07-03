@@ -36,4 +36,15 @@ Known compat gaps to test in the runtime POC (blocked on podman deploy):
   - All config fields recognized (database, storage, cluster, node, docker host, etc.)
   - DockerConfig.Host = `tcp://podman-runtime.hpc101-runtime.svc.cluster.local:2375`
 - **Binary**: CSOJ binary builds and starts from vendored subtree.
-- **Runtime POC**: PENDING (requires deployed podman runtime; escalate to cluster test when available).
+- **DockerManager API POC** (Round 2, 2026-07-03): 9/9 tests PASS against local Podman 5.4.2.
+  - Run: `DOCKER_HOST=tcp://127.0.0.1:PORT go run cmd/podman-poc/`
+  - Tests: volume create/remove, container create (NanoCPUs+Memory), start, tar copy,
+    exec with stdcopy multiplexed stdout/stderr, timeout cancellation, cleanup.
+  - CSOJ code unchanged — DockerManager uses `client.WithHost(cfg.Host)` which accepts
+    any docker-compatible endpoint.
+  - Reproducibility note: POC go.mod requires go >= 1.25.0 due to Docker SDK v28.5.1
+    transitive dependency on opentelemetry (otel/trace@v1.44.0). CSOJ itself
+    (vendor/csoj) builds with go 1.24. The POC is a validation tool, not a build
+    dependency of the platform.
+- **Runtime POC** (cluster): PENDING (requires deployed podman-runtime Service;
+  escalate to cluster test when available).
