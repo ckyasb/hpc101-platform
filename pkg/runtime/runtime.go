@@ -52,11 +52,8 @@ func (c *Client) CreateContainer(ctx context.Context, req CreateContainerRequest
 			return nil, fmt.Errorf("runtime: missing required label %q on container %s", k, req.Name)
 		}
 	}
-	if req.Image == "" {
-		return nil, fmt.Errorf("runtime: Image required")
-	}
-	if req.Name == "" {
-		return nil, fmt.Errorf("runtime: Name required")
+	if req.Image == "" || req.Name == "" || req.SSHKey == "" {
+		return nil, fmt.Errorf("runtime: Image, Name, and SSHKey are required")
 	}
 
 	cfg := &container.Config{

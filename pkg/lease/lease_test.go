@@ -110,3 +110,46 @@ func TestIsTerminal(t *testing.T) {
 		t.Error("Reclaimed lease should be terminal")
 	}
 }
+
+func TestExecuteRelease(t *testing.T) {
+	l := NewLease("eve", "ctr-eve", "svc-eve", "10.0.0.5", 2222, 8*time.Hour, 30*time.Minute)
+	var steps []ReleaseState
+	err := l.ExecuteRelease(func(s ReleaseState) error {
+		steps = append(steps, s)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("ExecuteRelease: %v", err)
+	}
+	expected := []ReleaseState{StateClosing, StateDraining, StateStopped, StateReclaimed}
+	for i, s := range expected {
+		if i >= len(steps) || steps[i] != s {
+			t.Errorf("step %d: expected %s, got %v", i, s, steps)
+		}
+	}
+	if l.State != StateReclaimed {
+		t.Errorf("final state: %s", l.State)
+	}
+}
+
+func TestExecuteReleaseReleasesOnlyOnce(t *testing.T) {
+	l := NewLease("frank", "ctr-frank", "svc-frank", "10.0.0.6", 2222, 8*time.Hour, 30*time.Minute)
+	if !l.Release(TriggerManual) {
+		t.Fatal("first release should succeed")
+	}
+	if l.Release(TriggerIdle) {
+		t.Error("second release should fail")
+	}
+}
+
+func TestReleaseAllTriggers(t *testing.T) {
+	for _, trig := range []Trigger{TriggerManual, TriggerMaxLife, TriggerIdle} {
+		l := NewLease("test", "c", "svc-test", "10.0.0.7", 2222, 8*time.Hour, 30*time.Minute)
+		if !l.Release(trig) {
+			t.Errorf("release with %s should succeed", trig)
+		}
+		if l.ReleasedBy != trig {
+			t.Errorf("ReleasedBy: got %s, want %s", l.ReleasedBy, trig)
+		}
+	}
+}

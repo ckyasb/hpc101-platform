@@ -3,6 +3,7 @@ package main
 import (
 	"log"
 	"net/http"
+	"os"
 
 	"hpc101-platform/controller"
 )
@@ -20,7 +21,15 @@ func (m memStore) UpsertLease(l *controller.Lease) error {
 }
 
 func main() {
-	h := controller.NewHandler(memStore{}, nil) // runtime set in deploy (requires go >=1.25)
+	endpoint := os.Getenv("HPC101_RUNTIME_ENDPOINT")
+	if endpoint == "" {
+		log.Fatal("HPC101_RUNTIME_ENDPOINT required (e.g. tcp://podman-runtime.hpc101-runtime:2375)")
+	}
+	rt, err := newRuntimeAdapter(endpoint)
+	if err != nil {
+		log.Fatalf("controller: runtime adapter: %v", err)
+	}
+	h := controller.NewHandler(memStore{}, rt)
 	log.Println("controller listening on :8080")
 	if err := http.ListenAndServe(":8080", h); err != nil {
 		log.Fatalf("controller: %v", err)

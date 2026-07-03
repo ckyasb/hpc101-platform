@@ -6,7 +6,10 @@
 // release state machine), and AC-5 (restart/orphan recovery).
 package lease
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // ReleaseState enumerates the lifecycle phases of a service lease.
 type ReleaseState string
@@ -160,4 +163,27 @@ func (l *Lease) Release(trigger Trigger) bool {
 	l.ReleasedBy = trigger
 	l.ReleasedAt = time.Now()
 	return l.Transition(StateClosing)
+}
+
+// ExecuteRelease runs the full release lifecycle from the current state.
+// Calls callback before each transition. If callback returns an error,
+// execution stops and the error is returned.
+// Returns nil when the lease reaches Reclaimed.
+func (l *Lease) ExecuteRelease(callback func(state ReleaseState) error) error {
+	steps := []ReleaseState{StateClosing, StateDraining, StateStopped, StateReclaimed}
+	for _, s := range steps {
+		if l.State == s {
+			continue // already at this state
+		}
+		if err := callback(s); err != nil {
+			return fmt.Errorf("release step %s: %w", s, err)
+		}
+		if !l.Transition(s) {
+			return fmt.Errorf("release: cannot transition from %s to %s", l.State, s)
+		}
+		if s == StateReclaimed {
+			return nil
+		}
+	}
+	return nil
 }
