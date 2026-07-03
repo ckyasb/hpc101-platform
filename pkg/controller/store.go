@@ -53,36 +53,30 @@ func (s *serializedStore) AllLeases() []*Lease {
 // drain and stop) to serialize release vs concurrent up/trigger.
 func (s *serializedStore) ReleaseLeaseIf(principal string, trigger lease.Trigger, shouldRelease func(*Lease) bool, rt ContainerCreator, drainer BastionDrainer) error {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	l, ok := s.leases[principal]
 	if !ok || l == nil || l.State != lease.StateActive || !shouldRelease(l) {
-		s.mu.Unlock()
 		return fmt.Errorf("release not applicable for %s", principal)
 	}
 	if !l.Release(trigger) {
-		s.mu.Unlock()
 		return fmt.Errorf("release already in progress for %s", principal)
 	}
-	containerID := l.ContainerID
-	s.mu.Unlock()
 
-	// Execute lifecycle with drain before stop
 	err := l.ExecuteRelease(func(state lease.ReleaseState) error {
 		if state == lease.StateDraining && drainer != nil {
 			return drainer.Drain(principal)
 		}
 		if state == lease.StateStopped && rt != nil {
-			return rt.StopService(containerID)
+			return rt.StopService(l.ContainerID)
 		}
 		return nil
 	})
 
-	// Re-lock for final upsert or recovery
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	if err != nil {
 		l.State = lease.StateActive
 		l.ReleasedBy = ""
-		l.ReleasedAt = lease.Lease{}.ReleasedAt // zero time
+		l.ReleasedAt = lease.Lease{}.ReleasedAt
 		s.leases[principal] = l
 		return err
 	}

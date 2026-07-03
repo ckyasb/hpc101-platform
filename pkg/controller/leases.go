@@ -74,6 +74,10 @@ func NewHandler(store LeaseStore, runtime ContainerCreator, submission Submissio
 	return newHandler(store, runtime, submission, nil)
 }
 
+func NewHandlerWithDrainer(store LeaseStore, runtime ContainerCreator, submission SubmissionService, drainer BastionDrainer) *Handler {
+	return newHandler(store, runtime, submission, drainer)
+}
+
 func newHandler(store LeaseStore, runtime ContainerCreator, submission SubmissionService, drainer BastionDrainer) *Handler {
 	h := &Handler{store: store, runtime: runtime, submission: submission, drainer: drainer, mux: http.NewServeMux()}
 	h.mux.HandleFunc("/api/v1/leases", h.handleLeases)

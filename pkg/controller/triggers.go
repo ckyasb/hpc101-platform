@@ -18,12 +18,12 @@ type ReleaseOps interface {
 	ReleaseLeaseIf(principal string, trigger lease.Trigger, shouldRelease func(*Lease) bool, rt ContainerCreator, drainer BastionDrainer) error
 }
 
-func StartReleaseTriggers(ctx context.Context, store ReleaseOps, rt ContainerCreator, interval time.Duration) {
-	go runMaxLifeTrigger(ctx, store, rt, interval)
-	go runIdleTrigger(ctx, store, rt, interval)
+func StartReleaseTriggers(ctx context.Context, store ReleaseOps, rt ContainerCreator, drainer BastionDrainer, interval time.Duration) {
+	go runMaxLifeTrigger(ctx, store, rt, drainer, interval)
+	go runIdleTrigger(ctx, store, rt, drainer, interval)
 }
 
-func runMaxLifeTrigger(ctx context.Context, store ReleaseOps, rt ContainerCreator, interval time.Duration) {
+func runMaxLifeTrigger(ctx context.Context, store ReleaseOps, rt ContainerCreator, drainer BastionDrainer, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -38,13 +38,13 @@ func runMaxLifeTrigger(ctx context.Context, store ReleaseOps, rt ContainerCreato
 				}
 				store.ReleaseLeaseIf(l.Owner, lease.TriggerMaxLife,
 					func(l *Lease) bool { return l.IsExpired() },
-					rt, nil)
+					rt, drainer)
 			}
 		}
 	}
 }
 
-func runIdleTrigger(ctx context.Context, store ReleaseOps, rt ContainerCreator, interval time.Duration) {
+func runIdleTrigger(ctx context.Context, store ReleaseOps, rt ContainerCreator, drainer BastionDrainer, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -58,7 +58,7 @@ func runIdleTrigger(ctx context.Context, store ReleaseOps, rt ContainerCreator, 
 				}
 				store.ReleaseLeaseIf(l.Owner, lease.TriggerIdle,
 					func(l *Lease) bool { return l.IsIdle() },
-					rt, nil)
+					rt, drainer)
 			}
 		}
 	}

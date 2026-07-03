@@ -29,7 +29,7 @@ func main() {
 			interval = d
 		}
 	}
-	controller.StartReleaseTriggers(context.Background(), store, rt, interval)
+	controller.StartReleaseTriggers(context.Background(), store, rt, nil, interval)
 
 	log.Println("controller listening on :8080")
 	if err := http.ListenAndServe(":8080", h); err != nil {
