@@ -333,7 +333,6 @@ func (c *Client) doCSOJ(ctx context.Context, method, path string, body []byte) (
 		return nil, newCSOJError(method, path, resp.StatusCode, env)
 	}
 	return &env, nil
-	return &env, nil
 }
 
 // getResource returns (true, nil) if the resource exists, (false, nil) for HTTP 404

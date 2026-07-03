@@ -90,9 +90,16 @@ func registerKey(args []string) {
 	}
 	key := strings.TrimSpace(string(d))
 	dir := filepath.Join(os.Getenv("HOME"), ".codojo")
-	os.MkdirAll(dir, 0700)
-	b, _ := json.MarshalIndent(config{SSHPublicKey: key}, "", "  ")
-	os.WriteFile(filepath.Join(dir, "config.json"), b, 0600)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		fatal("mkdir: %v", err)
+	}
+	b, err := json.MarshalIndent(config{SSHPublicKey: key}, "", "  ")
+	if err != nil {
+		fatal("marshal: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), b, 0600); err != nil {
+		fatal("write config: %v", err)
+	}
 	fmt.Println("key registered")
 }
 
@@ -113,7 +120,10 @@ func up(args []string) {
 	if len(args) >= 3 {
 		req.Problem = args[2]
 	}
-	body, _ := json.Marshal(req)
+	body, err := json.Marshal(req)
+	if err != nil {
+		fatal("marshal: %v", err)
+	}
 	resp, err := http.Post(getControllerURL()+"/api/v1/services", "application/json", strings.NewReader(string(body)))
 	if err != nil {
 		fatal("POST services: %v", err)

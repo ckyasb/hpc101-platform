@@ -60,6 +60,8 @@ func NewHandler(store LeaseStore, runtime ContainerCreator) *Handler {
 	h.mux.HandleFunc("/api/v1/leases", h.handleLeases)
 	h.mux.HandleFunc("/api/v1/services", h.handleCreateService)
 	h.mux.HandleFunc("/api/v1/release", h.handleRelease)
+	h.mux.HandleFunc("/api/v1/problems", h.handleProblems)
+	h.mux.HandleFunc("/api/v1/scores", h.handleScores)
 	h.mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
@@ -192,4 +194,14 @@ func (h *Handler) handleRelease(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": string(l.State)})
+}
+
+func (h *Handler) handleProblems(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"problems": []interface{}{}})
+}
+
+func (h *Handler) handleScores(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"scores": []interface{}{}})
 }
