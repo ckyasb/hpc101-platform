@@ -81,4 +81,3 @@ a signed cert verifies against the bastion-trusted CA:
 ```bash
 ./deploy/bastion/verify-ca.sh
 ```
-
