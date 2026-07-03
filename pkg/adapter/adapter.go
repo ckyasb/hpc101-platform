@@ -334,9 +334,24 @@ func (c *Client) StreamLogs(ctx context.Context, submissionID, containerID strin
 	wsURL = fmt.Sprintf("%s/ws/submissions/%s/containers/%s/logs?token=%s",
 		wsURL, url.PathEscape(submissionID), url.PathEscape(containerID), url.QueryEscape(c.credential))
 
-	conn, _, err := websocket.DefaultDialer.DialContext(ctx, wsURL, nil)
-	if err != nil {
-		return fmt.Errorf("adapter: websocket dial: %w", err)
+	// Retry websocket dial for transient failures before any frames are delivered.
+	var conn *websocket.Conn
+	var dialErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		conn, _, dialErr = websocket.DefaultDialer.DialContext(ctx, wsURL, nil)
+		if dialErr == nil {
+			break
+		}
+		if attempt < maxRetries {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-timeAfter(retryDelay << uint(attempt)):
+			}
+		}
+	}
+	if dialErr != nil {
+		return fmt.Errorf("adapter: websocket dial (after %d retries): %w", maxRetries, dialErr)
 	}
 	defer conn.Close()
 

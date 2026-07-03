@@ -5,7 +5,9 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -109,11 +111,12 @@ type ContainerInfo struct {
 
 // SubmissionRecord tracks a submission through its lifecycle.
 type SubmissionRecord struct {
-	ID        string           `json:"id"`
-	ProblemID string           `json:"problem_id"`
-	Principal string           `json:"principal"`
-	Submitted string           `json:"submitted_at"`
-	Result    SubmissionResult `json:"result,omitempty"`
+	ID             string           `json:"id"`
+	ProblemID      string           `json:"problem_id"`
+	Principal      string           `json:"principal"`
+	Submitted      string           `json:"submitted_at"`
+	Result         SubmissionResult `json:"result,omitempty"`
+	IdempotencyKey string           `json:"idempotency_key,omitempty"`
 }
 
 // CertSigner signs short-lived SSH user certificates for bastion access.
@@ -387,6 +390,33 @@ func (h *Handler) writeServiceResponse(w http.ResponseWriter, req CreateServiceR
 	json.NewEncoder(w).Encode(resp)
 }
 
+// computeIdempotencyKey generates a deterministic key from principal,
+// mapped CSOJ problem ID, sorted file names, and content hashes.
+// Used to detect duplicate submits and return the existing submission.
+func computeIdempotencyKey(principal, problemID string, files map[string][]byte) string {
+	// Sort file names for deterministic ordering.
+	names := make([]string, 0, len(files))
+	for name := range files {
+		names = append(names, name)
+	}
+	for i := 0; i < len(names); i++ {
+		for j := i + 1; j < len(names); j++ {
+			if names[i] > names[j] {
+				names[i], names[j] = names[j], names[i]
+			}
+		}
+	}
+	// Build hash input: principal|problemID|name:sha256|...
+	h := sha256.New()
+	fmt.Fprintf(h, "%s|%s|", principal, problemID)
+	for _, name := range names {
+		fmt.Fprintf(h, "%s:", name)
+		h.Write(files[name])
+		fmt.Fprintf(h, "|")
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
 func (h *Handler) handleRelease(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodDelete {
 		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
@@ -613,15 +643,34 @@ func (h *Handler) handleSubmissions(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"problem not mapped for this course/contest; sync problem first"}`, http.StatusNotFound)
 		return
 	}
+
+	// Idempotency check: compute a key from principal + mapped problem ID +
+	// sorted file names + content hash. If an identical submission exists,
+	// return it without calling CSOJ again.
+	idempotencyKey := computeIdempotencyKey(principal, mappedID, files)
+	h.mu.Lock()
+	existingRec, exists := h.submissions[idempotencyKey]
+	h.mu.Unlock()
+	if exists {
+		// Check if the files are identical (exact duplicate).
+		if existingRec.IdempotencyKey == idempotencyKey {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]string{
+				"submission_id": existingRec.ID,
+				"status":        "duplicate",
+			})
+			return
+		}
+	}
+
 	id, err := h.submission.Submit(r.Context(), mappedID, files)
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
 		return
 	}
 
-	// Save submission record.
-	principal2 := principal
-	_ = principal2
+	// Save submission record with idempotency key.
 	if principal == "" {
 		principal = "anonymous"
 	}
@@ -633,6 +682,7 @@ func (h *Handler) handleSubmissions(w http.ResponseWriter, r *http.Request) {
 	}
 	h.mu.Lock()
 	h.submissions[id] = rec
+	h.submissions[idempotencyKey] = rec // idempotency lookup
 	h.mu.Unlock()
 	// Persist in store if available.
 	if s, ok := h.store.(interface{ SaveSubmission(*SubmissionRecord) error }); ok {
