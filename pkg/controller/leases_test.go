@@ -1358,3 +1358,90 @@ type stubCertSigner struct{}
 func (s *stubCertSigner) SignUserCert(publicKey, principal string, validityHours int) (string, error) {
 	return "ssh-ed25519-cert-v01@openssh.com STUB-CERT-FOR-TEST", nil
 }
+
+// Round 18: submit -> score/logs restart proof
+
+type fakeLogStreamSubmission struct {
+	fakeSubmission
+	lastStreamSub string
+	lastStreamCtr string
+}
+
+func (f *fakeLogStreamSubmission) StreamLogs(ctx context.Context, submissionID, containerID string, cb func(stream, data string) error) error {
+	f.lastStreamSub = submissionID
+	f.lastStreamCtr = containerID
+	_ = cb("stdout", "log line 1")
+	return nil
+}
+
+func TestRestartSubmitScoreLogs(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := tmpDir + "/state.json"
+
+	// Phase 1: submit with FileStore-backed handler.
+	fs1, err := NewFileStore(path)
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+	if err := fs1.MapProblem("cs101", "c1", "p1", "c1--p1"); err != nil {
+		t.Fatal(err)
+	}
+	sub1 := &fakeLogStreamSubmission{}
+	h1 := NewHandlerWithOpts(fs1, nil, sub1, HandlerOpts{})
+	subBody := `{"problem_id":"p1","files":{"main.c":"aW50IG1haW4oKXt9"}}`
+	req1 := httptest.NewRequest(http.MethodPost, "/api/v1/submissions?course=cs101&contest=c1", strings.NewReader(subBody))
+	req1.Header.Set("Content-Type", "application/json")
+	rec1 := httptest.NewRecorder()
+	h1.ServeHTTP(rec1, req1)
+	if rec1.Code != http.StatusAccepted {
+		t.Fatalf("submit: %d: %s", rec1.Code, rec1.Body.String())
+	}
+	var subResp map[string]string
+	json.Unmarshal(rec1.Body.Bytes(), &subResp)
+	subID := subResp["submission_id"]
+	if subID == "" {
+		t.Fatal("no submission_id")
+	}
+
+	// Phase 2: restart — new FileStore, new handler with terminal result + containers.
+	fs2, err := NewFileStore(path)
+	if err != nil {
+		t.Fatalf("NewFileStore (restart): %v", err)
+	}
+	sub2 := &fakeLogStreamSubmission{
+		fakeSubmission: fakeSubmission{
+			result: &SubmissionResult{
+				SubmissionID: subID,
+				Status:       "Success",
+				Score:        100,
+				Performance:  95,
+				Containers:   []ContainerInfo{{ID: "csoj-ctr-1", Image: "alpine"}},
+			},
+		},
+	}
+	h2 := NewHandlerWithOpts(fs2, nil, sub2, HandlerOpts{})
+
+	// Phase 3: GET submissions/{id} returns terminal result.
+	req2 := httptest.NewRequest(http.MethodGet, "/api/v1/submissions/"+subID, nil)
+	rec2 := httptest.NewRecorder()
+	h2.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("GET submission: %d: %s", rec2.Code, rec2.Body.String())
+	}
+	var result SubmissionResult
+	json.Unmarshal(rec2.Body.Bytes(), &result)
+	if result.Status != "Success" || result.Score != 100 {
+		t.Errorf("result: %+v", result)
+	}
+
+	// Phase 4: GET logs/{id} streams with persisted container ID.
+	req3 := httptest.NewRequest(http.MethodGet, "/api/v1/submissions/logs/"+subID, nil)
+	rec3 := httptest.NewRecorder()
+	h2.ServeHTTP(rec3, req3)
+	if rec3.Code != http.StatusOK {
+		t.Fatalf("GET logs: %d: %s", rec3.Code, rec3.Body.String())
+	}
+	if sub2.lastStreamCtr != "csoj-ctr-1" {
+		t.Errorf("log streamer container ID: got %q, want csoj-ctr-1", sub2.lastStreamCtr)
+	}
+}
