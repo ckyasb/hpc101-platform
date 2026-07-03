@@ -87,8 +87,13 @@ spec:
             - name: ssh-host-key
               mountPath: /keys
           securityContext:
-            runAsNonRoot: false
+            runAsNonRoot: true
+            runAsUser: 1000
             allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+            seccompProfile:
+              type: RuntimeDefault
       containers:
         - name: sshd
           image: hpc101-platform/bastion:latest
@@ -209,12 +214,16 @@ data:
     # Called by sshd with %i = certificate KeyId (student principal).
     # Returns: permitopen="host:port" principal  (or nothing to reject).
     PRINCIPAL="$1"
+    if ! echo "$PRINCIPAL" | grep -qE '^[a-zA-Z0-9_-]{1,64}$'; then exit 0; fi
     CTRL="${HPC101_CONTROLLER_URL:-http://controller.hpc101-platform.svc.cluster.local:8080}"
     LEASE=$(curl -s --max-time 5 "${CTRL}/api/v1/leases?principal=${PRINCIPAL}" 2>/dev/null || echo "")
     if [ -z "$LEASE" ]; then exit 0; fi
     HOST=$(echo "$LEASE" | jq -r '.container_host // ""' 2>/dev/null)
     PORT=$(echo "$LEASE" | jq -r '.container_port // ""' 2>/dev/null)
-    if [ -n "$HOST" ] && [ -n "$PORT" ]; then
-      echo "permitopen=\"${HOST}:${PORT}\" ${PRINCIPAL}"
-    fi
+    STATE=$(echo "$LEASE" | jq -r '.state // ""' 2>/dev/null)
+    if [ "$STATE" != "Active" ]; then exit 0; fi
+    if ! echo "$HOST" | grep -qE '^[a-zA-Z0-9._-]+$'; then exit 0; fi
+    if ! echo "$PORT" | grep -qE '^[1-9][0-9]{0,4}$'; then exit 0; fi
+    if [ "$PORT" -gt 65535 ] 2>/dev/null; then exit 0; fi
+    echo "permitopen=\"${HOST}:${PORT}\" ${PRINCIPAL}"
     exit 0

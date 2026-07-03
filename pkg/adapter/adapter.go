@@ -16,35 +16,53 @@
 package adapter
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"io"
+	"mime/multipart"
+	"net/http"
+	"strings"
 )
 
 // Client is the adapter's high-level interface to CSOJ.
-// All calls go through CSOJ's HTTP/WebSocket API — no direct DB access.
 type Client struct {
-	// baseURL is CSOJ's API root, e.g. "http://csoj.hpc101-platform.svc.cluster.local:8080/api/v1"
-	baseURL string
-	// credential is the internal JWT or service token for CSOJ auth
+	baseURL    string
 	credential string
+	httpClient *http.Client
 }
 
 // NewClient creates a new adapter client.
 // baseURL is CSOJ's API root (e.g., "http://csoj:8080/api/v1").
-// credential is the auth token (JWT from CSOJ local login or service account).
 func NewClient(baseURL, credential string) *Client {
-	return &Client{baseURL: baseURL, credential: credential}
+	return &Client{
+		baseURL:    strings.TrimRight(baseURL, "/"),
+		credential: credential,
+		httpClient: new(http.Client),
+	}
 }
 
-// Submission represents a CSOJ submission response.
+// --- Types ---
+
+// csjResponse is the CSOJ API envelope: {code, message, data}.
+type csjResponse struct {
+	Code    int             `json:"code"`
+	Message string          `json:"message"`
+	Data    json.RawMessage `json:"data,omitempty"`
+}
+
+// Submission represents a CSOJ submission record.
 type Submission struct {
-	ID             string       `json:"id"`
-	ProblemID      string       `json:"problem_id"`
-	UserID         string       `json:"user_id"`
-	Status         string       `json:"status"` // Queued, Running, Success, Failed
-	Score          float64      `json:"score"`
-	Performance    float64      `json:"performance"`
-	Info           string       `json:"info"`
-	Containers     []Container  `json:"containers,omitempty"`
+	ID          string      `json:"id"`
+	ProblemID   string      `json:"problem_id"`
+	UserID      string      `json:"user_id"`
+	Status      string      `json:"status"` // Queued, Running, Success, Failed
+	Score       float64     `json:"score"`
+	Performance float64     `json:"performance"`
+	Info        string      `json:"info"`
+	Containers  []Container `json:"containers,omitempty"`
 }
 
 // Container represents a CSOJ judging container.
@@ -55,9 +73,7 @@ type Container struct {
 	LogPath string `json:"log_path,omitempty"`
 }
 
-// Result is the final judging result extracted by the adapter.
-// This is the {score, performance, info} JSON that CSOJ's final
-// workflow step prints to stdout and the dispatcher persists.
+// Result is the extracted judging result.
 type Result struct {
 	Score       float64 `json:"score"`
 	Performance float64 `json:"performance"`
@@ -65,64 +81,130 @@ type Result struct {
 	Status      string  `json:"status"`
 }
 
-// SubmitRequest is the adapter's submission payload.
-// The adapter serializes files into CSOJ's multipart form.
+// SubmitRequest carries the submission payload.
+// CSOJ expects a multipart form with field name "files" and each file's
+// Multipart filename set to base64(relative_path). The adapter encodes
+// the paths transparently — callers provide normal relative paths.
 type SubmitRequest struct {
-	// ProblemID is the platform problem ID (mapped to CSOJ problem).
 	ProblemID string
-	// Files is a map of base64-encoded relative paths → file content.
-	// CSOJ's submission handler decodes filenames from base64.
-	// Filenames must pass the problem's upload.files glob rules.
+	// Files maps normal relative paths to file content.
+	// The adapter base64-encodes each key as the multipart filename.
 	Files map[string][]byte
 }
 
-// Submit sends a submission to CSOJ.
-// Returns the CSOJ submission ID on success.
-// Implements the base64-filename multipart contract from
+// ContestRecord represents CSOJ contest/problem projection.
+type ContestRecord struct {
+	ContestID string `json:"contest_id"`
+	ProblemID string `json:"problem_id"`
+	Title     string `json:"title"`
+	StartTime string `json:"start_time"`
+	EndTime   string `json:"end_time"`
+}
+
+// --- API methods ---
+
+// Submit sends files to CSOJ for judging.
+// POST /api/v1/problems/:id/submit — multipart/form-data
+// Each file's multipart filename is base64(relative_path) per
 // vendor/csoj/internal/api/user/submission.go:162-168.
 func (c *Client) Submit(ctx context.Context, req SubmitRequest) (string, error) {
-	// TODO: implement HTTP multipart POST with base64-encoded filenames.
-	// Authorization: Bearer <c.credential>
-	// Content-Type: multipart/form-data
-	// URL: POST <baseURL>/problems/<req.ProblemID>/submit
-	// Body: each file as multipart field with field name = base64(relative_path)
-	return "", nil
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+
+	for relPath, content := range req.Files {
+		encName := base64.StdEncoding.EncodeToString([]byte(relPath))
+		part, err := w.CreateFormFile("files", encName)
+		if err != nil {
+			return "", fmt.Errorf("adapter: create form file %q: %w", relPath, err)
+		}
+		if _, err := part.Write(content); err != nil {
+			return "", fmt.Errorf("adapter: write file %q: %w", relPath, err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		return "", fmt.Errorf("adapter: close multipart: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/problems/%s/submit", c.baseURL, req.ProblemID)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, &buf)
+	if err != nil {
+		return "", fmt.Errorf("adapter: new request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", w.FormDataContentType())
+	httpReq.Header.Set("Authorization", "Bearer "+c.credential)
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return "", fmt.Errorf("adapter: submit %s: %w", req.ProblemID, err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("adapter: read submit response: %w", err)
+	}
+
+	var env csjResponse
+	if err := json.Unmarshal(body, &env); err != nil {
+		return "", fmt.Errorf("adapter: parse submit response: %w (body: %s)", err, string(body))
+	}
+	if env.Code != 0 {
+		return "", fmt.Errorf("adapter: CSOJ rejected submit (code=%d): %s", env.Code, env.Message)
+	}
+
+	var data struct {
+		SubmissionID string `json:"submission_id"`
+	}
+	if err := json.Unmarshal(env.Data, &data); err != nil {
+		return "", fmt.Errorf("adapter: parse submission_id: %w", err)
+	}
+	return data.SubmissionID, nil
 }
 
-// QueryResult reads the submission status and result from CSOJ.
-// Returns the full Submission record including score/performance/info.
+// QueryResult reads submission status and result from CSOJ.
+// GET /api/v1/submissions/:id
 func (c *Client) QueryResult(ctx context.Context, submissionID string) (*Submission, error) {
-	// TODO: implement HTTP GET
-	// URL: GET <baseURL>/submissions/<submissionID>
-	// Returns full submission including status, score, performance, info
-	return nil, nil
+	url := fmt.Sprintf("%s/submissions/%s", c.baseURL, submissionID)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("adapter: new request: %w", err)
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+c.credential)
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("adapter: query %s: %w", submissionID, err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("adapter: read query response: %w", err)
+	}
+
+	var env csjResponse
+	if err := json.Unmarshal(body, &env); err != nil {
+		return nil, fmt.Errorf("adapter: parse query response: %w", err)
+	}
+	if env.Code != 0 {
+		return nil, fmt.Errorf("adapter: CSOJ rejected query (code=%d): %s", env.Code, env.Message)
+	}
+
+	var sub Submission
+	if err := json.Unmarshal(env.Data, &sub); err != nil {
+		return nil, fmt.Errorf("adapter: parse submission data: %w", err)
+	}
+	return &sub, nil
 }
 
-// StreamLogs opens a WebSocket connection to stream the judge container logs.
-// callback receives each NDJSON line: {"stream":"stdout","data":"..."} or
-// {"stream":"stderr","data":"..."}.
-// This mirrors CSOJ-cli's stream_logs function and CSOJ-WebUI's log viewer.
-// URL: WS <baseURL>/ws/submissions/<subID>/containers/<conID>/logs?token=<jwt>
+// StreamLogs opens a WebSocket connection to stream judge container logs.
+// URL: WS <base>/ws/submissions/:subID/containers/:conID/logs?token=<jwt>
 func (c *Client) StreamLogs(ctx context.Context, submissionID, containerID string, callback func(stream, data string) error) error {
-	// TODO: implement WebSocket connection with gorilla/websocket
-	// Parse NDJSON frames, call callback for each line
-	return nil
-}
-
-// ContestRecord represents the CSOJ-side contest/problem registration
-// the adapter must maintain for the platform's problem catalog.
-type ContestRecord struct {
-	ContestID  string `json:"contest_id"`
-	ProblemID  string `json:"problem_id"`
-	Title      string `json:"title"`
-	StartTime  string `json:"start_time"`
-	EndTime    string `json:"end_time"`
+	return fmt.Errorf("adapter: StreamLogs not yet implemented")
 }
 
 // SyncProblem ensures the platform problem has a corresponding CSOJ
-// contest/problem record. Called when a course problem is published.
-// Uses CSOJ's admin API (requires admin credential).
+// contest/problem record. Uses CSOJ's admin API.
 func (c *Client) SyncProblem(ctx context.Context, rec ContestRecord) error {
-	// TODO: upsert contest/problem via CSOJ admin API or filesystem
-	return nil
+	return fmt.Errorf("adapter: SyncProblem not yet implemented")
 }
