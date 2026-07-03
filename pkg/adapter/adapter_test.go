@@ -196,16 +196,13 @@ func TestStreamLogsWebSocket(t *testing.T) {
 }
 
 func TestSyncProblemHTTP(t *testing.T) {
+	var callPaths []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			t.Errorf("expected POST, got %s", r.Method)
-		}
+		callPaths = append(callPaths, r.URL.Path)
 		if r.Header.Get("Authorization") != "Bearer admin-token" {
 			t.Errorf("missing bearer token")
 		}
-		if !strings.Contains(r.URL.Path, "/admin/problems") {
-			t.Errorf("unexpected path: %s", r.URL.Path)
-		}
+		// Step 1: POST /contests, Step 2: POST /contests/c1/problems
 		json.NewEncoder(w).Encode(map[string]interface{}{"code": 0, "message": "ok"})
 	}))
 	defer srv.Close()
@@ -216,6 +213,15 @@ func TestSyncProblemHTTP(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("SyncProblem: %v", err)
+	}
+	if len(callPaths) != 2 {
+		t.Fatalf("expected 2 API calls, got %d: %v", len(callPaths), callPaths)
+	}
+	if !strings.Contains(callPaths[0], "/contests") {
+		t.Errorf("first call should be POST /contests: %s", callPaths[0])
+	}
+	if !strings.Contains(callPaths[1], "/contests/c1/problems") {
+		t.Errorf("second call should be POST /contests/c1/problems: %s", callPaths[1])
 	}
 }
 

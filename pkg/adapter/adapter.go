@@ -263,46 +263,65 @@ func (c *Client) StreamLogs(ctx context.Context, submissionID, containerID strin
 }
 
 // SyncProblem ensures the platform problem has a corresponding CSOJ
-// contest/problem record via CSOJ's admin API.
-// POST /api/v1/admin/problems with contest/problem metadata.
+// contest/problem record.
+// Creates contest via POST /api/v1/contests then
+// problem via POST /api/v1/contests/:contestID/problems.
+// Routes from vendor/csoj/internal/api/admin/router.go:66,72.
 func (c *Client) SyncProblem(ctx context.Context, rec ContestRecord) error {
-	payload := map[string]interface{}{
-		"contest_id":  rec.ContestID,
-		"problem_id":  rec.ProblemID,
-		"title":       rec.Title,
-		"start_time":  rec.StartTime,
-		"end_time":    rec.EndTime,
+	// 1. Ensure contest exists
+	contestPayload := map[string]interface{}{
+		"name":       rec.ContestID,
+		"start_time": rec.StartTime,
+		"end_time":   rec.EndTime,
 	}
-	body, err := json.Marshal(payload)
+	body, err := json.Marshal(contestPayload)
 	if err != nil {
-		return fmt.Errorf("adapter: marshal sync payload: %w", err)
+		return fmt.Errorf("adapter: marshal contest: %w", err)
 	}
-
-	url := fmt.Sprintf("%s/admin/problems", c.baseURL)
+	url := fmt.Sprintf("%s/contests", c.baseURL)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("adapter: new sync request: %w", err)
+		return fmt.Errorf("adapter: contest request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+c.credential)
-
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
-		return fmt.Errorf("adapter: sync problem: %w", err)
+		return fmt.Errorf("adapter: create contest: %w", err)
+	}
+	resp.Body.Close()
+
+	// 2. Create problem in contest
+	probPayload := map[string]interface{}{
+		"title": rec.Title,
+	}
+	body, err = json.Marshal(probPayload)
+	if err != nil {
+		return fmt.Errorf("adapter: marshal problem: %w", err)
+	}
+	url = fmt.Sprintf("%s/contests/%s/problems", c.baseURL, rec.ContestID)
+	httpReq, err = http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("adapter: problem request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+c.credential)
+	resp, err = c.httpClient.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("adapter: create problem: %w", err)
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return fmt.Errorf("adapter: read sync response: %w", err)
+		return fmt.Errorf("adapter: read problem response: %w", err)
 	}
-
 	var env csjResponse
 	if err := json.Unmarshal(respBody, &env); err != nil {
-		return fmt.Errorf("adapter: parse sync response: %w", err)
+		return fmt.Errorf("adapter: parse problem response: %w", err)
 	}
 	if env.Code != 0 {
-		return fmt.Errorf("adapter: CSOJ rejected sync (code=%d): %s", env.Code, env.Message)
+		return fmt.Errorf("adapter: CSOJ rejected problem (code=%d): %s", env.Code, env.Message)
 	}
 	return nil
 }
