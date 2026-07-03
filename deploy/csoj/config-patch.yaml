@@ -7,7 +7,7 @@
 # CSOJ is ZERO-CODE-CHANGE. Only config.yaml is modified.
 # DockerManager (internal/judger/docker.go) uses github.com/docker/docker/client
 # With client.WithHost(cfg.Host), accepting any docker-compatible endpoint.
-# Pointing it at podman-runtime TCP service reuses it unchanged.
+# Pointing it at dedicated-judge-runtime TCP service reuses it unchanged.
 ---
 apiVersion: v1
 kind: ConfigMap

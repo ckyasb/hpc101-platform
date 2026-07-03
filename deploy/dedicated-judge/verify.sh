@@ -76,20 +76,33 @@ EXEC_CREATE=$(curl -sf -X POST "${API}/containers/${CTR_ID}/exec" \
   -d '{"AttachStdout":true,"AttachStderr":true,"Cmd":["echo","exec-works"]}') || { echo "FAIL: exec create"; exit 1; }
 EXEC_ID=$(echo "$EXEC_CREATE" | grep -o '"Id":"[^"]*"' | cut -d'"' -f4)
 if [ -z "$EXEC_ID" ]; then echo "FAIL: no exec ID"; exit 1; fi
-# Capture raw binary output for framing analysis.
-EXEC_RAW=$(curl -sf -X POST "${API}/exec/${EXEC_ID}/start" \
+# Capture raw binary output to temp file for binary-safe framing analysis.
+EXEC_FILE="$TMPDIR/exec_raw.bin"
+curl -sf -X POST "${API}/exec/${EXEC_ID}/start" \
   -H 'Content-Type: application/vnd.docker.raw-stream' \
-  -d '{}' 2>/dev/null) || { echo "FAIL: exec start"; exit 1; }
-# Docker stdcopy framing: first byte is stream type (1=stdout, 2=stderr, 3=stdin).
-# When Tty=false, Docker SDK uses stdcopy.StdCopy to demux. Validate the first
-# byte is a valid stream type (0x01 or 0x02). Unframed output is a FAIL because
-# CSOJ's stdcopy.StdCopy would misparse it.
-FIRST_BYTE=$(printf '%s' "$EXEC_RAW" | head -c1 | od -An -tu1 | tr -d ' ')
-if [ "$FIRST_BYTE" = "1" ] || [ "$FIRST_BYTE" = "2" ]; then
-  echo "PASS: stdcopy framing valid (stream type=$FIRST_BYTE)"
+  -d '{}' -o "$EXEC_FILE" 2>/dev/null || { echo "FAIL: exec start"; exit 1; }
+# Docker stdcopy multiplex header: 1 byte stream type, 3 bytes reserved, 4 bytes payload length (big-endian).
+# Validate the full 8-byte header, not just the first byte.
+HEADER_HEX=$(od -An -tx1 -N8 "$EXEC_FILE" | tr -d ' \n')
+STREAM_TYPE=$(printf '%d' "0x$(printf '%s' "$HEADER_HEX" | cut -c1-2)" 2>/dev/null || echo 0)
+PAYLOAD_LEN=$(printf '%d' "0x$(printf '%s' "$HEADER_HEX" | cut -c13-16)" 2>/dev/null || echo 0)
+# Extract payload starting at byte 9 (skip 8-byte header).
+PAYLOAD=$(dd if="$EXEC_FILE" bs=1 skip=8 count="$PAYLOAD_LEN" 2>/dev/null)
+if [ "$STREAM_TYPE" = "1" ] || [ "$STREAM_TYPE" = "2" ]; then
+  if [ "$PAYLOAD_LEN" -gt 0 ] 2>/dev/null; then
+    if echo "$PAYLOAD" | grep -q "exec-works"; then
+      echo "PASS: stdcopy framing valid (stream=$STREAM_TYPE len=$PAYLOAD_LEN payload contains 'exec-works')"
+    else
+      echo "FAIL: stdcopy header valid but payload missing 'exec-works'"
+      exit 1
+    fi
+  else
+    echo "FAIL: stdcopy header valid but payload length is 0"
+    exit 1
+  fi
 else
-  echo "FAIL: exec response is not stdcopy-framed (first byte=$FIRST_BYTE, expected 1 or 2)"
-  echo "  This means the runtime returns raw output instead of Docker multiplexed streams."
+  echo "FAIL: exec response is not stdcopy-framed (stream type=$STREAM_TYPE, expected 1 or 2)"
+  echo "  header hex: $HEADER_HEX"
   echo "  CSOJ's stdcopy.StdCopy will fail to parse this."
   exit 1
 fi
@@ -129,38 +142,41 @@ echo "PASS: volume create + remove"
 # 7. Resource limit assertion (fail-closed)
 echo ""
 echo "[7/10] Resource limit assertion (fail-closed)..."
+# Use labeled output so parsing is deterministic regardless of stdcopy framing.
 RES_EXEC=$(curl -sf -X POST "${API}/containers/${CTR_ID}/exec" \
   -H 'Content-Type: application/json' \
-  -d '{"AttachStdout":true,"Cmd":["sh","-c","cat /sys/fs/cgroup/cpu.max 2>/dev/null; echo ---; cat /sys/fs/cgroup/memory.max 2>/dev/null; echo ---; cat /sys/fs/cgroup/cpuset.cpus 2>/dev/null || echo no-cpuset"]}') || { echo "FAIL: res exec create"; exit 1; }
+  -d '{"AttachStdout":true,"Cmd":["sh","-c","printf \"cpu.max=%s\\n\" \"$(cat /sys/fs/cgroup/cpu.max 2>/dev/null || echo missing)\"; printf \"memory.max=%s\\n\" \"$(cat /sys/fs/cgroup/memory.max 2>/dev/null || echo missing)\"; printf \"cpuset=%s\\n\" \"$(cat /sys/fs/cgroup/cpuset.cpus 2>/dev/null || cat /sys/fs/cgroup/cpuset.cpus.effective 2>/dev/null || echo missing)\""]}') || { echo "FAIL: res exec create"; exit 1; }
 RES_EXEC_ID=$(echo "$RES_EXEC" | grep -o '"Id":"[^"]*"' | cut -d'"' -f4)
-RES_OUT=$(curl -sf -X POST "${API}/exec/${RES_EXEC_ID}/start" \
-  -H 'Content-Type: application/vnd.docker.raw-stream' -d '{}' 2>/dev/null) || true
-RES_CLEAN=$(echo "$RES_OUT" | tr -d '\0')
+RES_FILE="$TMPDIR/res_raw.bin"
+curl -sf -X POST "${API}/exec/${RES_EXEC_ID}/start" \
+  -H 'Content-Type: application/vnd.docker.raw-stream' -d '{}' -o "$RES_FILE" 2>/dev/null || true
+RES_CLEAN=$(cat "$RES_FILE" | tr -d '\0' | sed 's/[^[:print:]]//g')
 # Memory limit must be 134217728 bytes (128MB). Fail if absent.
-if echo "$RES_CLEAN" | grep -q "134217728"; then
+MEM_VAL=$(echo "$RES_CLEAN" | grep "memory.max=" | cut -d= -f2 | tr -d '[:space:]')
+if [ "$MEM_VAL" = "134217728" ]; then
   echo "PASS: memory limit enforced (134217728 bytes)"
 else
-  echo "FAIL: memory limit 134217728 not found in cgroup output"
+  echo "FAIL: memory limit 134217728 not found (got: $MEM_VAL)"
   echo "  cgroup output: $RES_CLEAN"
   exit 1
 fi
 # CPU quota must show a non-max value (quota assigned). Fail if absent or unlimited.
-CPU_MAX_LINE=$(echo "$RES_CLEAN" | head -1)
-if echo "$CPU_MAX_LINE" | grep -q "^max"; then
-  echo "FAIL: CPU quota is unlimited (cpu.max=$CPU_MAX_LINE)"
+CPU_VAL=$(echo "$RES_CLEAN" | grep "cpu.max=" | cut -d= -f2 | tr -d '[:space:]')
+if echo "$CPU_VAL" | grep -q "^max"; then
+  echo "FAIL: CPU quota is unlimited (cpu.max=$CPU_VAL)"
   exit 1
-elif echo "$CPU_MAX_LINE" | grep -q "500000"; then
+elif echo "$CPU_VAL" | grep -q "500000"; then
   echo "PASS: CPU quota enforced (500000/100000 = 0.5 CPU)"
 else
-  echo "FAIL: CPU quota 500000 not found in cpu.max (got: $CPU_MAX_LINE)"
+  echo "FAIL: CPU quota 500000 not found in cpu.max (got: $CPU_VAL)"
   exit 1
 fi
 # Cpuset must include the configured CPU.
-CPUSET_LINE=$(echo "$RES_CLEAN" | grep -A1 "memory.max" | tail -1 | tr -d '[:space:]')
-if echo "$CPUSET_LINE" | grep -q "${CPUSET}" 2>/dev/null; then
+CPUSET_VAL=$(echo "$RES_CLEAN" | grep "cpuset=" | cut -d= -f2 | tr -d '[:space:]')
+if echo "$CPUSET_VAL" | grep -q "${CPUSET}" 2>/dev/null; then
   echo "PASS: cpuset includes configured CPU (${CPUSET})"
 else
-  echo "FAIL: cpuset does not include configured CPU ${CPUSET} (got: $CPUSET_LINE)"
+  echo "FAIL: cpuset does not include configured CPU ${CPUSET} (got: $CPUSET_VAL)"
   exit 1
 fi
 
@@ -231,8 +247,11 @@ TO_CTR=$(curl -sf -X POST "${API}/containers/create" \
 curl -sf -X POST "${API}/containers/${TO_CTR}/start" >/dev/null 2>&1 || { echo "FAIL: timeout test start"; exit 1; }
 # curl --max-time forces a client-side timeout, simulating context.WithTimeout.
 # The /wait should not return before the timeout; curl exits 28 on timeout.
+# Temporarily disable set -e so curl's non-zero exit is captured.
+set +e
 curl -sf --max-time 1 -X POST "${API}/containers/${TO_CTR}/wait" >/dev/null 2>&1
 CURL_EXIT=$?
+set -e
 if [ "$CURL_EXIT" = "28" ]; then
   echo "PASS: client-side timeout fires (curl exit 28)"
 else

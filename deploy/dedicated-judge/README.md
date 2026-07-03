@@ -35,10 +35,10 @@ This dedicated node path provides a production-grade alternative:
 5. Point CSOJ at this endpoint by setting `DockerConfig.Host`:
    ```yaml
    DockerConfig:
-     Host: "tcp://<judge-node-ip>:2375"
+     Host: "tcp://dedicated-judge-runtime.hpc101-runtime.svc.cluster.local:2375"
    ```
 
-6. Set `HPC101_RUNTIME_ENDPOINT=tcp://<judge-node-ip>:2375` for the controller.
+6. Set `HPC101_RUNTIME_ENDPOINT=tcp://dedicated-judge-runtime.hpc101-runtime.svc.cluster.local:2375` for the controller.
 
 ## containers.conf Security Profile
 

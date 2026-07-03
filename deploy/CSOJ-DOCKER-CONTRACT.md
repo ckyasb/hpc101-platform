@@ -18,7 +18,7 @@ integration seam the hpc101-platform podman runtime must satisfy.
 
 ## Required Podman Compatibility
 
-The podman runtime endpoint (`tcp://podman-runtime.hpc101-runtime.svc.cluster.local:2375`)
+The podman runtime endpoint (`tcp://dedicated-judge-runtime.hpc101-runtime.svc.cluster.local:2375`)
 MUST implement the above Docker API subset. Podman's `podman system service` with
 docker-compat mode (`--time=0 tcp://0.0.0.0:2375`) exposes this API.
 
@@ -34,7 +34,7 @@ Known compat gaps to test in the runtime POC (blocked on podman deploy):
 - **Vet**: `cd vendor/csoj && go vet ./...` PASSED
 - **Config Parse**: CSOJ binary loads our `deploy/csoj/config.yaml` without config errors.
   - All config fields recognized (database, storage, cluster, node, docker host, etc.)
-  - DockerConfig.Host = `tcp://podman-runtime.hpc101-runtime.svc.cluster.local:2375`
+  - DockerConfig.Host = `tcp://dedicated-judge-runtime.hpc101-runtime.svc.cluster.local:2375`
 - **Binary**: CSOJ binary builds and starts from vendored subtree.
 - **DockerManager API POC** (Round 2, 2026-07-03): 9/9 tests PASS against local Podman 5.4.2.
   - Run: `DOCKER_HOST=tcp://127.0.0.1:PORT go run cmd/podman-poc/`
