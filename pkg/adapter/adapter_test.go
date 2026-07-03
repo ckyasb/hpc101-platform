@@ -195,25 +195,58 @@ func TestStreamLogsWebSocket(t *testing.T) {
 	}
 }
 
-func TestSyncProblemHTTP(t *testing.T) {
+func TestSyncProblemCreate(t *testing.T) {
 	var calls []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls = append(calls, r.Method+" "+r.URL.Path)
-		// GET returns 404 for not-found (triggers POST), 200 for found (triggers PUT)
-		if r.Method == http.MethodGet {
-			code := 1 // not found
-			if strings.Contains(r.URL.Path, "/problems/p1") || strings.Contains(r.URL.Path, "/contests/c1") && r.Method == http.MethodGet {
-				// First GETs: return not-found → POST path
-			}
-			json.NewEncoder(w).Encode(map[string]interface{}{"code": code})
-			return
-		}
+		code := 1 // not found for GET
+		if r.Method != http.MethodGet { code = 0 } // success for POST/PUT
+		json.NewEncoder(w).Encode(map[string]interface{}{"code": code})
+	}))
+	defer srv.Close()
+	c := NewClient(srv.URL, "tok")
+	err := c.SyncProblem(context.Background(), ContestRecord{ContestID:"c1",ProblemID:"p1",Title:"T"})
+	if err != nil {
+		t.Fatalf("SyncProblem: %v", err)
+	}
+	if len(calls) != 4 {
+		t.Fatalf("expected 4 calls (GET contest, POST contest, GET problem, POST problem), got %d: %v", len(calls), calls)
+	}
+}
+
+func TestSyncProblemUpdate(t *testing.T) {
+	var calls []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, r.Method+" "+r.URL.Path)
+		// GET returns found → should PUT
 		json.NewEncoder(w).Encode(map[string]interface{}{"code": 0})
 	}))
 	defer srv.Close()
 	c := NewClient(srv.URL, "tok")
-	c.SyncProblem(context.Background(), ContestRecord{ContestID:"c1",ProblemID:"p1",Title:"T"})
-	if len(calls) < 3 { t.Fatalf("expected >=3 calls, got %d: %v", len(calls), calls) }
+	err := c.SyncProblem(context.Background(), ContestRecord{ContestID:"c1",ProblemID:"p1",Title:"T"})
+	if err != nil {
+		t.Fatalf("SyncProblem: %v", err)
+	}
+	if len(calls) != 4 {
+		t.Fatalf("expected 4 calls (GET,PUT,GET,PUT), got %d: %v", len(calls), calls)
+	}
+}
+
+func TestSyncProblemGETTransportError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// First GET succeeds, second GET fails — contest is created but can't check problem
+		if r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/problems/") {
+			w.WriteHeader(500)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"code": 1})
+	}))
+	defer srv.Close()
+	c := NewClient(srv.URL, "tok")
+	err := c.SyncProblem(context.Background(), ContestRecord{ContestID:"c1",ProblemID:"p1",Title:"T"})
+	if err == nil {
+		t.Fatal("expected error for 500 on GET problem")
+	}
 }
 
 func TestSyncProblemRejectsError(t *testing.T) {

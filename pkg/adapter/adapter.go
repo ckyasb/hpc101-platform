@@ -271,59 +271,82 @@ func (c *Client) SyncProblem(ctx context.Context, rec ContestRecord) error {
 	if err := c.upsertContest(ctx, rec); err != nil { return err }
 	return c.upsertProblem(ctx, rec)
 }
-func (c *Client) upsertContest(ctx context.Context, rec ContestRecord) error {
-	payload := map[string]interface{}{"id":rec.ContestID,"name":rec.ContestID,"starttime":rec.StartTime,"endtime":rec.EndTime}
-	body,_ := json.Marshal(payload)
-	method := http.MethodPost
-	url := fmt.Sprintf("%s/contests", c.baseURL)
-	if c.resourceExists(ctx, "contests/"+rec.ContestID) {
-		method = http.MethodPut
-		url = fmt.Sprintf("%s/contests/%s", c.baseURL, rec.ContestID)
+
+// doCSOJ sends a JSON request, reads the body, and validates the CSOJ envelope.
+func (c *Client) doCSOJ(ctx context.Context, method, path string, body []byte) (*csjResponse, error) {
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+"/"+path, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("adapter: new request: %w", err)
 	}
-	req,_ := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(body))
-	req.Header.Set("Content-Type","application/json")
-	req.Header.Set("Authorization","Bearer "+c.credential)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.credential)
 	resp, err := c.httpClient.Do(req)
-	if err != nil { return fmt.Errorf("adapter: upsert contest: %w", err) }
+	if err != nil {
+		return nil, fmt.Errorf("adapter: %s %s: %w", method, path, err)
+	}
 	defer resp.Body.Close()
-	respBody,_ := io.ReadAll(resp.Body)
-	var env csjResponse; json.Unmarshal(respBody, &env)
-	if env.Code != 0 { return fmt.Errorf("adapter: contest %s (code=%d): %s", method, env.Code, env.Message) }
-	return nil
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("adapter: read %s %s: %w", method, path, err)
+	}
+	var env csjResponse
+	if err := json.Unmarshal(respBody, &env); err != nil {
+		return nil, fmt.Errorf("adapter: parse %s %s (status %d): %w", method, path, resp.StatusCode, err)
+	}
+	if env.Code != 0 {
+		return nil, fmt.Errorf("adapter: CSOJ %s %s (code=%d): %s", method, path, env.Code, env.Message)
+	}
+	return &env, nil
 }
+
+// getResource returns (true, nil) if the resource exists, (false, nil) if CSOJ returns a non-zero code (not found),
+// and (false, error) for transport/HTTP/malformed-json failures.
+func (c *Client) getResource(ctx context.Context, path string) (bool, error) {
+	_, err := c.doCSOJ(ctx, http.MethodGet, url.PathEscape(path), nil)
+	if err != nil {
+		if strings.Contains(err.Error(), "code=") {
+			return false, nil // CSOJ returned non-zero code → not found
+		}
+		return false, err // transport or parse failure
+	}
+	return true, nil
+}
+
+func (c *Client) upsertContest(ctx context.Context, rec ContestRecord) error {
+	payload := map[string]interface{}{"id": rec.ContestID, "name": rec.ContestID, "starttime": rec.StartTime, "endtime": rec.EndTime}
+	body, _ := json.Marshal(payload)
+	path := "contests/" + url.PathEscape(rec.ContestID)
+	exists, err := c.getResource(ctx, path)
+	if err != nil {
+		return fmt.Errorf("adapter: check contest %s: %w", rec.ContestID, err)
+	}
+	if exists {
+		_, err = c.doCSOJ(ctx, http.MethodPut, path, body)
+	} else {
+		_, err = c.doCSOJ(ctx, http.MethodPost, "contests", body)
+	}
+	return err
+}
+
 func (c *Client) upsertProblem(ctx context.Context, rec ContestRecord) error {
 	payload := map[string]interface{}{
-		"id":rec.ProblemID,"name":rec.Title,"starttime":rec.StartTime,"endtime":rec.EndTime,
-		"cluster":"hpc101-runtime","cpu":1,"memory":512,
-		"upload":map[string]interface{}{"upload_files":[]string{"*"}},
-		"workflow":[]map[string]interface{}{{"image":"alpine:latest","steps":[]string{"echo ok"}}},
-		"score":map[string]interface{}{"mode":"score"},
+		"id": rec.ProblemID, "name": rec.Title,
+		"starttime": rec.StartTime, "endtime": rec.EndTime,
+		"cluster": "hpc101-runtime", "cpu": 1, "memory": 512,
+		"upload": map[string]interface{}{"upload_files": []string{"*"}},
+		"workflow": []map[string]interface{}{{"image": "alpine:latest", "steps": [][]string{{"sh", "-c", "echo ok"}}}},
+		"score": map[string]interface{}{"mode": "score"},
 	}
-	body,_ := json.Marshal(payload)
-	method := http.MethodPost
-	url := fmt.Sprintf("%s/contests/%s/problems", c.baseURL, rec.ContestID)
-	if c.resourceExists(ctx, "problems/"+rec.ProblemID) {
-		method = http.MethodPut
-		url = fmt.Sprintf("%s/problems/%s", c.baseURL, rec.ProblemID)
+	body, _ := json.Marshal(payload)
+	path := "problems/" + url.PathEscape(rec.ProblemID)
+	exists, err := c.getResource(ctx, path)
+	if err != nil {
+		return fmt.Errorf("adapter: check problem %s: %w", rec.ProblemID, err)
 	}
-	req,_ := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(body))
-	req.Header.Set("Content-Type","application/json")
-	req.Header.Set("Authorization","Bearer "+c.credential)
-	resp, err := c.httpClient.Do(req)
-	if err != nil { return fmt.Errorf("adapter: upsert problem: %w", err) }
-	defer resp.Body.Close()
-	respBody,_ := io.ReadAll(resp.Body)
-	var env csjResponse; json.Unmarshal(respBody, &env)
-	if env.Code != 0 { return fmt.Errorf("adapter: problem %s (code=%d): %s", method, env.Code, env.Message) }
-	return nil
-}
-func (c *Client) resourceExists(ctx context.Context, path string) bool {
-	req,_ := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/"+path, nil)
-	req.Header.Set("Authorization","Bearer "+c.credential)
-	resp, err := c.httpClient.Do(req)
-	if err != nil { return false }
-	defer resp.Body.Close()
-	body,_ := io.ReadAll(resp.Body)
-	var env csjResponse; json.Unmarshal(body, &env)
-	return env.Code == 0
+	if exists {
+		_, err = c.doCSOJ(ctx, http.MethodPut, path, body)
+	} else {
+		_, err = c.doCSOJ(ctx, http.MethodPost, "contests/"+url.PathEscape(rec.ContestID)+"/problems", body)
+	}
+	return err
 }

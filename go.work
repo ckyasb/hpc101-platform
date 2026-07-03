@@ -2,6 +2,8 @@ go 1.24.0
 
 use (
 	./cmd/controller
+	./pkg/adapter
 	./pkg/controller
 	./pkg/lease
+	./pkg/sshca
 )
