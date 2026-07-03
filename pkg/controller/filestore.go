@@ -1,7 +1,7 @@
 // File: pkg/controller/filestore.go
 // Package: controller
 // Created: 2026-07-03
-// Author: hpc101-platform contributors
+// Author: ckyasb
 // Purpose: JSON-file-backed persistent store for the hpc101-platform controller.
 //          Implements LeaseStore, KeyStore, problem mapping, submission
 //          persistence, and ReleaseOps so it can replace serializedStore in

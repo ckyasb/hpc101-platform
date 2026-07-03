@@ -1258,3 +1258,103 @@ func TestReleaseWithFileStore(t *testing.T) {
 		t.Errorf("lease state: %v", final)
 	}
 }
+
+// Round 17: HTTP-level restart flow tests across FileStore reopen
+
+func TestRestartRegisterKeyUp(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := tmpDir + "/state.json"
+
+	// Phase 1: register a key with a FileStore-backed handler.
+	fs1, err := NewFileStore(path)
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+	ca, _ := sshcaSignerForTest()
+	h1 := NewHandlerWithOpts(fs1, nil, nil, HandlerOpts{CertSigner: ca})
+	keyBody := `{"principal":"alice","public_key":"ssh-ed25519 AAAAtest"}`
+	req1 := httptest.NewRequest(http.MethodPost, "/api/v1/keys", strings.NewReader(keyBody))
+	req1.Header.Set("Content-Type", "application/json")
+	rec1 := httptest.NewRecorder()
+	h1.ServeHTTP(rec1, req1)
+	if rec1.Code != http.StatusCreated {
+		t.Fatalf("register-key: %d: %s", rec1.Code, rec1.Body.String())
+	}
+
+	// Phase 2: simulate restart — new FileStore from same path, new handler.
+	fs2, err := NewFileStore(path)
+	if err != nil {
+		t.Fatalf("NewFileStore (restart): %v", err)
+	}
+	h2 := NewHandlerWithOpts(fs2, &fakeRuntime{}, nil, HandlerOpts{CertSigner: ca})
+
+	// Phase 3: POST up should find the persisted key and issue a cert.
+	upBody := `{"principal":"alice","image":"img:1","ssh_key":"ssh-ed25519 AAAAtest","course":"cs101","problem":"hw1"}`
+	req2 := httptest.NewRequest(http.MethodPost, "/api/v1/services", strings.NewReader(upBody))
+	req2.Header.Set("Content-Type", "application/json")
+	rec2 := httptest.NewRecorder()
+	h2.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusCreated {
+		t.Fatalf("up after restart: %d: %s", rec2.Code, rec2.Body.String())
+	}
+	var up map[string]interface{}
+	json.Unmarshal(rec2.Body.Bytes(), &up)
+	if _, ok := up["certificate"]; !ok {
+		t.Errorf("expected certificate in up response, got: %v", up)
+	}
+}
+
+func TestRestartSyncSubmit(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := tmpDir + "/state.json"
+
+	// Phase 1: sync a problem with FileStore-backed handler.
+	fs1, err := NewFileStore(path)
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+	fs := &fakeProblemSync{csojID: "c1--p1"}
+	h1 := NewHandlerWithOpts(fs1, nil, nil, HandlerOpts{ProblemSync: fs})
+	syncBody := `{"course":"cs101","contest":"c1","problem_id":"p1","title":"P1"}`
+	req1 := httptest.NewRequest(http.MethodPost, "/api/v1/problems/sync", strings.NewReader(syncBody))
+	req1.Header.Set("Content-Type", "application/json")
+	rec1 := httptest.NewRecorder()
+	h1.ServeHTTP(rec1, req1)
+	if rec1.Code != http.StatusCreated {
+		t.Fatalf("sync: %d: %s", rec1.Code, rec1.Body.String())
+	}
+
+	// Phase 2: restart — new FileStore, new handler with submission service.
+	fs2, err := NewFileStore(path)
+	if err != nil {
+		t.Fatalf("NewFileStore (restart): %v", err)
+	}
+	sub := &fakeSubmission{}
+	h2 := NewHandlerWithOpts(fs2, nil, sub, HandlerOpts{})
+
+	// Phase 3: submit should resolve the persisted mapping.
+	subBody := `{"problem_id":"p1","files":{"main.c":"aW50IG1haW4oKXt9"}}`
+	req2 := httptest.NewRequest(http.MethodPost, "/api/v1/submissions?course=cs101&contest=c1", strings.NewReader(subBody))
+	req2.Header.Set("Content-Type", "application/json")
+	rec2 := httptest.NewRecorder()
+	h2.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusAccepted {
+		t.Fatalf("submit after restart: %d: %s", rec2.Code, rec2.Body.String())
+	}
+	if sub.lastProblemID != "c1--p1" {
+		t.Errorf("submit used wrong ID: got %q, want c1--p1 (mapped persisted)", sub.lastProblemID)
+	}
+}
+
+// sshcaSignerForTest returns a CertSigner backed by a freshly generated CA.
+func sshcaSignerForTest() (CertSigner, error) {
+	// Use a minimal in-process signer that satisfies the CertSigner interface
+	// without importing the sshca package (avoid cross-module dep in tests).
+	return &stubCertSigner{}, nil
+}
+
+type stubCertSigner struct{}
+
+func (s *stubCertSigner) SignUserCert(publicKey, principal string, validityHours int) (string, error) {
+	return "ssh-ed25519-cert-v01@openssh.com STUB-CERT-FOR-TEST", nil
+}
