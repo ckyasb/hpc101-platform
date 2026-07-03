@@ -44,7 +44,7 @@ type ServiceResult struct {
 
 // ContainerCreator is the interface for creating service containers.
 type ContainerCreator interface {
-	CreateService(principal, image, sshKey, course, problem string) (*ServiceResult, error)
+	CreateService(req CreateServiceRequest) (*ServiceResult, error)
 }
 
 // Handler serves the controller HTTP API.
@@ -137,12 +137,12 @@ func (h *Handler) handleCreateService(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"invalid principal"}`, http.StatusBadRequest)
 		return
 	}
-	if req.Image == "" {
-		http.Error(w, `{"error":"image required"}`, http.StatusBadRequest)
+	if req.Image == "" || req.SSHKey == "" || req.Course == "" || req.Problem == "" {
+		http.Error(w, `{"error":"principal, image, ssh_key, course, and problem are required"}`, http.StatusBadRequest)
 		return
 	}
 
-	result, err := h.runtime.CreateService(req.Principal, req.Image, req.SSHKey, req.Course, req.Problem)
+	result, err := h.runtime.CreateService(req)
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
 		return

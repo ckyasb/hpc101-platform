@@ -23,21 +23,29 @@ func newRuntimeAdapter(endpoint string) (*runtimeAdapter, error) {
 	return &runtimeAdapter{client: cli}, nil
 }
 
-func (a *runtimeAdapter) CreateService(principal, image, sshKey, course, problem string) (*controller.ServiceResult, error) {
-	name := "svc-" + principal
+func (a *runtimeAdapter) CreateService(req controller.CreateServiceRequest) (*controller.ServiceResult, error) {
+	name := "svc-" + req.Principal
 	labels := map[string]string{
-		"platform.io/owner":   principal,
+		"platform.io/owner":   req.Principal,
 		"platform.io/kind":    "service",
-		"platform.io/course":  course,
-		"platform.io/problem": problem,
+		"platform.io/course":  req.Course,
+		"platform.io/problem": req.Problem,
+	}
+	cpu := req.CPULimit
+	if cpu <= 0 {
+		cpu = 500_000_000
+	}
+	mem := req.MemoryMB
+	if mem <= 0 {
+		mem = 256
 	}
 	res, err := a.client.CreateContainer(context.Background(), runtime.CreateContainerRequest{
 		Name:     name,
-		Image:    image,
+		Image:    req.Image,
 		Labels:   labels,
-		CPU:      500_000_000,
-		MemoryMB: 256,
-		SSHKey:   sshKey,
+		CPU:      cpu,
+		MemoryMB: mem,
+		SSHKey:   req.SSHKey,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("controller: create service: %w", err)

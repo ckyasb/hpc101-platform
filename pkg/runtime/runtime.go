@@ -6,6 +6,8 @@ import (
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/mount"
+	"strconv"
+
 	"github.com/docker/docker/api/types/nat"
 	"github.com/docker/docker/client"
 )
@@ -83,29 +85,30 @@ func (c *Client) CreateContainer(ctx context.Context, req CreateContainerRequest
 	if err != nil {
 		return nil, fmt.Errorf("runtime: create %s: %w", req.Name, err)
 	}
-	if err := c.cli.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
-		return nil, fmt.Errorf("runtime: start %s: %w", safePrefix(resp.ID, 12), err)
+	if startErr := c.cli.ContainerStart(ctx, resp.ID, container.StartOptions{}); startErr != nil {
+		c.cli.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
+		return nil, fmt.Errorf("runtime: start %s: %w", safePrefix(resp.ID, 12), startErr)
 	}
 	insp, err := c.cli.ContainerInspect(ctx, resp.ID)
 	if err != nil {
+		c.cli.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
 		return nil, fmt.Errorf("runtime: inspect %s: %w", safePrefix(resp.ID, 12), err)
 	}
-	host := insp.NetworkSettings.IPAddress
-	if host == "" {
-		host = "127.0.0.1"
+	bindings, ok := insp.NetworkSettings.Ports["2222/tcp"]
+	if !ok || len(bindings) == 0 {
+		c.cli.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
+		return nil, fmt.Errorf("runtime: no port binding for 2222/tcp on %s", safePrefix(resp.ID, 12))
 	}
-	var port uint16
-	for _, bindings := range insp.NetworkSettings.Ports["2222/tcp"] {
-		if bindings.HostPort != "" {
-			p, _ := fmt.Sscanf(bindings.HostPort, "%d", &port) // only need 1 match
-			_ = p
-			break
-		}
+	host := bindings[0].HostIP
+	if host == "" || host == "0.0.0.0" {
+		host = "podman-runtime.hpc101-runtime.svc.cluster.local"
 	}
-	if port == 0 {
-		port = 2222
+	p, err := strconv.ParseUint(bindings[0].HostPort, 10, 16)
+	if err != nil {
+		c.cli.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
+		return nil, fmt.Errorf("runtime: bad host port %q: %w", bindings[0].HostPort, err)
 	}
-	return &CreateResult{ContainerID: resp.ID, Host: host, Port: port}, nil
+	return &CreateResult{ContainerID: resp.ID, Host: host, Port: uint16(p)}, nil
 }
 
 func (c *Client) StartContainer(ctx context.Context, containerID string) error {

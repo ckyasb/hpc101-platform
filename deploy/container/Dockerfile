@@ -12,6 +12,8 @@ RUN apk add --no-cache openssh-server openssh-keygen curl bash && \
     chown student:student /run/sshd && \
     chown student:student /etc/ssh/ssh_host_*_key
 COPY deploy/container/sshd_config /etc/ssh/sshd_config
+COPY deploy/container/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 EXPOSE 2222
 USER student
-ENTRYPOINT ["/usr/sbin/sshd", "-D", "-e", "-f", "/etc/ssh/sshd_config"]
+ENTRYPOINT ["/entrypoint.sh"]

@@ -30,13 +30,13 @@ type fakeRuntime struct {
 	lastProblem   string
 }
 
-func (f *fakeRuntime) CreateService(principal, image, sshKey, course, problem string) (*ServiceResult, error) {
-	f.lastPrincipal = principal
-	f.lastImage = image
-	f.lastSSHKey = sshKey
-	f.lastCourse = course
-	f.lastProblem = problem
-	return &ServiceResult{ContainerID: "ctr-" + principal, Host: "10.0.0.5", Port: 2222}, nil
+func (f *fakeRuntime) CreateService(req CreateServiceRequest) (*ServiceResult, error) {
+	f.lastPrincipal = req.Principal
+	f.lastImage = req.Image
+	f.lastSSHKey = req.SSHKey
+	f.lastCourse = req.Course
+	f.lastProblem = req.Problem
+	return &ServiceResult{ContainerID: "ctr-" + req.Principal, Host: "10.0.0.5", Port: 2222}, nil
 }
 
 func TestHandleLeasesActive(t *testing.T) {
@@ -123,6 +123,26 @@ func TestCreateServiceWritesActiveLease(t *testing.T) {
 	h.ServeHTTP(rec2, req2)
 	if rec2.Code != http.StatusOK {
 		t.Fatalf("lease GET returned %d", rec2.Code)
+	}
+}
+
+func TestCreateServiceRejectsEmptyFields(t *testing.T) {
+	rt := &fakeRuntime{}
+	h := NewHandler(memStore{}, rt)
+
+	for _, body := range []string{
+		`{"principal":"s1","image":"","ssh_key":"k","course":"c","problem":"p"}`,
+		`{"principal":"s1","image":"i","ssh_key":"","course":"c","problem":"p"}`,
+		`{"principal":"s1","image":"i","ssh_key":"k","course":"","problem":"p"}`,
+		`{"principal":"invalid!","image":"i","ssh_key":"k","course":"c","problem":"p"}`,
+	} {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/services", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("body %q: expected 400, got %d", body, rec.Code)
+		}
 	}
 }
 
