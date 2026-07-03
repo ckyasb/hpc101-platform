@@ -11,16 +11,16 @@ import (
 // BastionSession represents one active SSH session/channel as reported
 // by the bastion host to the controller.
 type BastionSession struct {
-	Principal      string `json:"principal"`
-	ChannelCount   int    `json:"channel_count"`
-	LastActive     string `json:"last_active"`
+	Principal    string `json:"principal"`
+	ChannelCount int    `json:"channel_count"`
+	LastActive   string `json:"last_active"`
 }
 
 // BastionRoster is a batch of active sessions reported periodically.
 type BastionRoster struct {
-	Hostname  string            `json:"hostname"`
-	Timestamp string            `json:"timestamp"`
-	Sessions  []BastionSession  `json:"sessions"`
+	Hostname  string           `json:"hostname"`
+	Timestamp string           `json:"timestamp"`
+	Sessions  []BastionSession `json:"sessions"`
 }
 
 // handleBastionRoster handles POST /api/v1/bastion/roster.

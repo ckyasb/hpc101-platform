@@ -158,12 +158,12 @@ type ContestRecord struct {
 	StartTime string `json:"start_time"`
 	EndTime   string `json:"end_time"`
 	// Judge configuration — required by CSOJ for problem creation.
-	Cluster  string `json:"cluster"`
-	CPU      int    `json:"cpu"`
-	Memory   int    `json:"memory"`
-	Upload   map[string]interface{} `json:"upload"`
+	Cluster  string                   `json:"cluster"`
+	CPU      int                      `json:"cpu"`
+	Memory   int                      `json:"memory"`
+	Upload   map[string]interface{}   `json:"upload"`
 	Workflow []map[string]interface{} `json:"workflow"`
-	Score    map[string]interface{} `json:"score"`
+	Score    map[string]interface{}   `json:"score"`
 }
 
 // --- API methods ---

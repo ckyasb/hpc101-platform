@@ -5,8 +5,9 @@
 // endpoint (Docker or Podman's docker-compat socket).
 //
 // Usage:
-//   DOCKER_HOST=tcp://127.0.0.1:12375 go run .  # against local podman
-//   DOCKER_HOST=unix:///run/podman/podman.sock go run .
+//
+//	DOCKER_HOST=tcp://127.0.0.1:12375 go run .  # against local podman
+//	DOCKER_HOST=unix:///run/podman/podman.sock go run .
 //
 // Tests: volume create/remove, container create+start with limits,
 // tar copy, exec with multiplexed stdout/stderr, timeout cancellation,
@@ -80,7 +81,7 @@ func main() {
 		},
 		&container.HostConfig{
 			Resources: container.Resources{
-				NanoCPUs: 500_000_000, // 0.5 CPU
+				NanoCPUs: 500_000_000,      // 0.5 CPU
 				Memory:   64 * 1024 * 1024, // 64 MB
 			},
 			Mounts: []mount.Mount{

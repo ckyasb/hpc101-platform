@@ -54,9 +54,9 @@ func CanTransition(current, next ReleaseState) bool {
 type Trigger string
 
 const (
-	TriggerManual    Trigger = "manual"
-	TriggerMaxLife   Trigger = "max_life"
-	TriggerIdle      Trigger = "idle"
+	TriggerManual  Trigger = "manual"
+	TriggerMaxLife Trigger = "max_life"
+	TriggerIdle    Trigger = "idle"
 )
 
 // Lease tracks a single student service container.

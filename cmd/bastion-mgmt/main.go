@@ -94,14 +94,18 @@ func main() {
 	// Serve local API for sshd channel tracking and drain commands.
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/local/channel-open", func(w http.ResponseWriter, r *http.Request) {
-		var req struct{ Principal string `json:"principal"` }
+		var req struct {
+			Principal string `json:"principal"`
+		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err == nil && req.Principal != "" {
 			tracker.openChannel(req.Principal)
 		}
 		w.WriteHeader(http.StatusOK)
 	})
 	mux.HandleFunc("/api/v1/local/channel-close", func(w http.ResponseWriter, r *http.Request) {
-		var req struct{ Principal string `json:"principal"` }
+		var req struct {
+			Principal string `json:"principal"`
+		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err == nil && req.Principal != "" {
 			tracker.closeChannel(req.Principal)
 		}
@@ -112,7 +116,9 @@ func main() {
 			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 			return
 		}
-		var req struct{ Principal string `json:"principal"` }
+		var req struct {
+			Principal string `json:"principal"`
+		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err == nil && req.Principal != "" {
 			tracker.drain(req.Principal)
 			log.Printf("drain: terminated channels for %s", req.Principal)

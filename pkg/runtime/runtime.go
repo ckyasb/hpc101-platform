@@ -72,8 +72,8 @@ func (c *Client) CreateContainer(ctx context.Context, req CreateContainerRequest
 			"2222/tcp": []nat.PortBinding{{HostIP: "0.0.0.0", HostPort: "0"}},
 		},
 		Mounts: []mount.Mount{{
-			Type:   mount.TypeTmpfs,
-			Target: "/tmp",
+			Type:         mount.TypeTmpfs,
+			Target:       "/tmp",
 			TmpfsOptions: &mount.TmpfsOptions{SizeBytes: 256 * 1024 * 1024},
 		}},
 		Resources: container.Resources{

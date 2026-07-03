@@ -12,7 +12,8 @@
 // The bastion's sshd_config trusts this CA (TrustedUserCAKeys),
 // disables raw authorized_keys (AuthorizedKeysFile none), and enforces
 // cert-only authentication. Students use:
-//   ssh -J bastion user@container-host -p <port>
+//
+//	ssh -J bastion user@container-host -p <port>
 package sshca
 
 import (
