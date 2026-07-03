@@ -1,0 +1,58 @@
+
+# === hpc101-platform CSOJ Configuration ===
+# Zero-change integration: CSOJ code is unmodified.
+# DockerConfig.Host is the sole reuse seam.
+
+listen: ":8080"
+
+admin:
+  enabled: true
+  listen: ":8081"
+
+logger:
+  level: "debug"
+  file: ""
+
+storage:
+  user_avatar: "data/avatars"
+  submission_content: "data/submissions"
+  database: "data/csoj.db"
+  submission_log: "data/logs"
+
+auth:
+  jwt:
+    secret: "${CSOJ_JWT_SECRET}"
+    expire_hours: 744
+  local:
+    enabled: true
+  gitlab:
+    app: ""
+    url: ""
+    client_id: ""
+    client_secret: ""
+    redirect_uri: ""
+    frontend_callback_url: ""
+
+cors:
+  allowed_origins:
+    - "http://localhost:8080"
+
+links: []
+
+# === Judger cluster: single node = podman runtime ===
+# Cluster[].Node[].Docker.Host is the KEY reuse seam.
+# CSOJ's DockerManager uses client.WithHost(cfg.Host).
+cluster:
+  - name: "hpc101-runtime"
+    node:
+      - name: "podman-0"
+        cpu: 4
+        memory: 8192
+        docker:
+          host: "tcp://podman-runtime.hpc101-runtime.svc.cluster.local:2375"
+          tls_verify: false
+          ca_cert: ""
+          cert: ""
+          key: ""
+
+contests_root: "contests"

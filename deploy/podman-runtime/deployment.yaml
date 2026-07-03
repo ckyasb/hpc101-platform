@@ -1,16 +1,31 @@
-# Podman Runtime Deployment
-# Rootless podman exposing a docker-compatible TCP endpoint.
-# Consumed by both the hpc101-platform controller and CSOJ (via DockerConfig.Host).
+# Podman Runtime Deployment — Restricted PSA Compliant (Primary Path per AC-1.1)
 #
-# Per plan AC-1.1: runs without privileged:true, no hostPath /var/run/docker.sock.
-# Uses fuse-overlayfs storage driver; subuid/subgid must be provisioned on the node.
+# Rootless podman exposing a docker-compatible TCP endpoint inside the cluster.
+# Consumed by: platform controller + CSOJ (via DockerConfig.Host).
+#
+# AC-1.1 primary path: runs under restricted Pod Security Admission.
+#   - no privileged:true
+#   - no hostPath volumes (cgroup access via pod's own cgroup namespace)
+#   - runAsNonRoot: true
+#   - allowPrivilegeEscalation: false
+#   - capabilities.drop: [ALL]
+#   - seccompProfile: RuntimeDefault
+#
+# Known tension: rootless podman inside a container under restricted PSA is
+# novel (exploratory, no repo precedent). This manifest is the PRIMARY-PATH
+# attempt. If cgroup/resource enforcement fails under these constraints,
+# escalate to DEC-1: dedicated out-of-cluster podman judge node via TCP
+# (CSOJ natively supports tcp://host:2375, zero code change).
 ---
 apiVersion: v1
 kind: Namespace
 metadata:
   name: hpc101-runtime
   labels:
-    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted
     app.kubernetes.io/part-of: hpc101-platform
 ---
 apiVersion: v1
@@ -25,7 +40,6 @@ metadata:
   name: podman-runtime
   namespace: hpc101-runtime
 rules:
-  # podman needs to read its own pod metadata for container labeling
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list"]
@@ -55,23 +69,23 @@ data:
     # Per plan AC-8: judge containers inherit CapDrop=ALL, no-new-privileges,
     # and the default seccomp profile without any CSOJ code changes.
     [containers]
-    # Drop all default capabilities
+    # Drop all default Linux capabilities from spawned containers
     default_capabilities = []
-    # Never add extra capabilities by default
     add_capabilities = []
+    # Prevent spawned containers from gaining new privileges via setuid/setgid
+    no_new_privileges = true
+    # Apply the standard seccomp profile from the container image
+    seccomp_profile = "/usr/share/containers/seccomp.json"
     # Environment variables injected by default
     env = []
-    # Log driver (journald or k8s-file for log collection)
+    # Log driver for log collection
     log_driver = "k8s-file"
 
     [engine]
-    # Runtime for non-root users
     runtime = "crun"
-    # Supplementary group IDs for user namespace
     infra_image = ""
 
     [network]
-    # Default network backend
     network_backend = "cni"
 ---
 apiVersion: v1
@@ -93,7 +107,7 @@ metadata:
     app: podman-runtime
 spec:
   type: ClusterIP
-  clusterIP: None  # headless; reachable as podman-runtime.hpc101-runtime.svc.cluster.local
+  clusterIP: None
   ports:
     - name: docker-api
       port: 2375
@@ -121,12 +135,10 @@ spec:
         app: podman-runtime
     spec:
       serviceAccountName: podman-runtime
-      # Pinning to a Linux node with cgroup v2 and fuse support
       nodeSelector:
         kubernetes.io/os: linux
       securityContext:
-        # Pod-level: no privileged, no hostPID/hostNetwork
-        runAsNonRoot: false  # rootless podman needs root initially for cgroup setup
+        # Pod-level: no privilege, restricted PSA baseline
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -158,16 +170,19 @@ spec:
               subPath: registries.conf
             - name: podman-data
               mountPath: /var/lib/containers
-            - name: cgroup
-              mountPath: /sys/fs/cgroup
-              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            - name: run
+              mountPath: /run
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
               drop:
                 - ALL
-            readOnlyRootFilesystem: false  # podman needs writable /run and /tmp
-            runAsNonRoot: false
+            readOnlyRootFilesystem: false
+            runAsNonRoot: true
+            runAsUser: 165536
+            runAsGroup: 165536
           resources:
             requests:
               cpu: "500m"
@@ -195,16 +210,16 @@ spec:
         - name: podman-data
           emptyDir:
             sizeLimit: 50Gi
-        - name: cgroup
-          hostPath:
-            path: /sys/fs/cgroup
-            type: Directory
+        - name: tmp
+          emptyDir: {}
+        - name: run
+          emptyDir: {}
 ---
-# NetworkPolicy: only hpc101-platform components and CSOJ can reach the runtime
+# NetworkPolicy: allow CSOJ and controller across namespaces
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: podman-runtime
+  name: allow-hpc101-platform
   namespace: hpc101-runtime
 spec:
   podSelector:
@@ -214,9 +229,14 @@ spec:
     - Ingress
   ingress:
     - from:
-        - podSelector:
+        - namespaceSelector:
             matchLabels:
               app.kubernetes.io/part-of: hpc101-platform
+          podSelector: {}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: hpc101-platform
+          podSelector: {}
       ports:
         - port: 2375
           protocol: TCP

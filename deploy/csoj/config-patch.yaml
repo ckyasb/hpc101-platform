@@ -1,18 +1,14 @@
 # CSOJ Configuration Overlay for hpc101-platform
 #
-# CSOJ is deployed as a separate Deployment alongside the podman runtime.
-# Its config.yaml points DockerConfig.Host at the podman-runtime service.
+# Validated against CSOJ config struct: vendor/csoj/internal/config/config.go
+# Key YAML tags: cluster[].node (singular), storage.database (nested),
+# logger, contests_root.
 #
-# Per plan: CSOJ is ZERO-CODE-CHANGE (only config.yaml modified).
+# CSOJ is ZERO-CODE-CHANGE. Only config.yaml is modified.
 # DockerManager (internal/judger/docker.go) uses github.com/docker/docker/client
-# with client.WithHost(cfg.Host), which accepts any docker-compatible endpoint.
-# Pointing it at the podman-runtime TCP service reuses it unchanged.
-#
-# Cluster config: CSOJ's cluster/node model maps to the podman runtime.
-# The single podman-runtime endpoint acts as the sole "node" CSOJ schedules onto.
+# With client.WithHost(cfg.Host), accepting any docker-compatible endpoint.
+# Pointing it at podman-runtime TCP service reuses it unchanged.
 ---
-# CSOJ main config (config.yaml) overlay
-# Merge this with CSOJ's default config.yaml
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -20,34 +16,55 @@ metadata:
   namespace: hpc101-platform
 data:
   config.yaml: |
-    # CSOJ configuration — zero-code-change integration with hpc101-platform
+    # === hpc101-platform CSOJ Configuration ===
+    # Zero-change integration: CSOJ code is unmodified.
+    # DockerConfig.Host is the sole reuse seam.
+
     listen: ":8080"
+
     admin:
       enabled: true
       listen: ":8081"
 
-    # Database: SQLite (zero-change default)
-    database:
-      driver: sqlite
-      dsn: /data/csoj.db
+    logger:
+      level: "debug"
+      file: ""
 
-    # Auth: local login (no gitlab OIDC — adapter uses internal credential)
+    storage:
+      user_avatar: "data/avatars"
+      submission_content: "data/submissions"
+      database: "data/csoj.db"
+      submission_log: "data/logs"
+
     auth:
+      jwt:
+        secret: "${CSOJ_JWT_SECRET}"
+        expire_hours: 744
       local:
         enabled: true
-      jwt:
-        secret: ${CSOJ_JWT_SECRET}
-        expire_hours: 720  # 30 days for course duration
+      gitlab:
+        app: ""
+        url: ""
+        client_id: ""
+        client_secret: ""
+        redirect_uri: ""
+        frontend_callback_url: ""
 
-    # Cluster: single node = the podman runtime service
-    # This is the KEY reuse seam: CSOJ's DockerManager uses DockerConfig.Host
-    # via client.WithHost(cfg.Host), accepting any docker-compatible endpoint.
+    cors:
+      allowed_origins:
+        - "http://localhost:8080"
+
+    links: []
+
+    # === Judger cluster: single node = podman runtime ===
+    # Cluster[].Node[].Docker.Host is the KEY reuse seam.
+    # CSOJ's DockerManager uses client.WithHost(cfg.Host).
     cluster:
-      - name: hpc101-runtime
-        nodes:
-          - name: podman-0
+      - name: "hpc101-runtime"
+        node:
+          - name: "podman-0"
             cpu: 4
-            memory: 8192  # MB
+            memory: 8192
             docker:
               host: "tcp://podman-runtime.hpc101-runtime.svc.cluster.local:2375"
               tls_verify: false
@@ -55,7 +72,4 @@ data:
               cert: ""
               key: ""
 
-    # CORS: allow the bastion/controller origin
-    cors:
-      allowed_origins:
-        - "http://localhost:8080"
+    contests_root: "contests"
