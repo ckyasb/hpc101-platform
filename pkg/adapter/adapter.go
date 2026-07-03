@@ -334,24 +334,38 @@ func (c *Client) StreamLogs(ctx context.Context, submissionID, containerID strin
 	wsURL = fmt.Sprintf("%s/ws/submissions/%s/containers/%s/logs?token=%s",
 		wsURL, url.PathEscape(submissionID), url.PathEscape(containerID), url.QueryEscape(c.credential))
 
-	// Retry websocket dial for transient failures before any frames are delivered.
+	// Retry websocket dial for transient failures only (transport or 5xx).
+	// 4xx handshake failures are NOT retried (auth/config errors).
 	var conn *websocket.Conn
 	var dialErr error
 	for attempt := 0; attempt <= maxRetries; attempt++ {
-		conn, _, dialErr = websocket.DefaultDialer.DialContext(ctx, wsURL, nil)
+		var resp *http.Response
+		conn, resp, dialErr = websocket.DefaultDialer.DialContext(ctx, wsURL, nil)
 		if dialErr == nil {
+			break // success
+		}
+		// Check if the failure is retryable.
+		// resp == nil means transport failure (retryable).
+		// resp.StatusCode >= 500 means server error (retryable).
+		// resp.StatusCode 4xx means client/auth error (NOT retryable).
+		retryable := false
+		if resp == nil {
+			retryable = true
+		} else if resp.StatusCode >= 500 {
+			retryable = true
+			resp.Body.Close()
+		}
+		if !retryable || attempt >= maxRetries {
 			break
 		}
-		if attempt < maxRetries {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-timeAfter(retryDelay << uint(attempt)):
-			}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timeAfter(retryDelay << uint(attempt)):
 		}
 	}
 	if dialErr != nil {
-		return fmt.Errorf("adapter: websocket dial (after %d retries): %w", maxRetries, dialErr)
+		return fmt.Errorf("adapter: websocket dial (after retries): %w", dialErr)
 	}
 	defer conn.Close()
 

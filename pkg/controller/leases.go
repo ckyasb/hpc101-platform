@@ -150,6 +150,7 @@ type Handler struct {
 	keyStore    KeyStore
 	problemSync ProblemSyncService
 	submissions map[string]*SubmissionRecord // submissionID → record
+	idempotency map[string]string            // scopeKey → submissionID
 	mux         *http.ServeMux
 }
 
@@ -198,6 +199,7 @@ func newHandler(store LeaseStore, runtime ContainerCreator, submission Submissio
 		keyStore:    ks,
 		problemSync: sync,
 		submissions: make(map[string]*SubmissionRecord),
+		idempotency: make(map[string]string),
 		mux:         http.NewServeMux(),
 	}
 	h.mux.HandleFunc("/api/v1/leases", h.handleLeases)
@@ -390,11 +392,10 @@ func (h *Handler) writeServiceResponse(w http.ResponseWriter, req CreateServiceR
 	json.NewEncoder(w).Encode(resp)
 }
 
-// computeIdempotencyKey generates a deterministic key from principal,
-// mapped CSOJ problem ID, sorted file names, and content hashes.
-// Used to detect duplicate submits and return the existing submission.
-func computeIdempotencyKey(principal, problemID string, files map[string][]byte) string {
-	// Sort file names for deterministic ordering.
+// computeScopeKey generates a deterministic key from principal,
+// mapped CSOJ problem ID, and sorted file names (without content).
+// Used to detect duplicate/incompatible submits for the same scope.
+func computeScopeKey(principal, problemID string, files map[string][]byte) string {
 	names := make([]string, 0, len(files))
 	for name := range files {
 		names = append(names, name)
@@ -406,9 +407,29 @@ func computeIdempotencyKey(principal, problemID string, files map[string][]byte)
 			}
 		}
 	}
-	// Build hash input: principal|problemID|name:sha256|...
 	h := sha256.New()
 	fmt.Fprintf(h, "%s|%s|", principal, problemID)
+	for _, name := range names {
+		fmt.Fprintf(h, "%s|", name)
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// computePayloadHash generates a SHA-256 from sorted file names + content.
+// Used to detect exact vs incompatible duplicate submits.
+func computePayloadHash(files map[string][]byte) string {
+	names := make([]string, 0, len(files))
+	for name := range files {
+		names = append(names, name)
+	}
+	for i := 0; i < len(names); i++ {
+		for j := i + 1; j < len(names); j++ {
+			if names[i] > names[j] {
+				names[i], names[j] = names[j], names[i]
+			}
+		}
+	}
+	h := sha256.New()
 	for _, name := range names {
 		fmt.Fprintf(h, "%s:", name)
 		h.Write(files[name])
@@ -644,16 +665,23 @@ func (h *Handler) handleSubmissions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Idempotency check: compute a key from principal + mapped problem ID +
-	// sorted file names + content hash. If an identical submission exists,
-	// return it without calling CSOJ again.
-	idempotencyKey := computeIdempotencyKey(principal, mappedID, files)
+	// Idempotency: split into scope key (principal + problem + file names)
+	// and payload hash (file contents). This allows exact duplicate detection
+	// and incompatible duplicate rejection.
+	scopeKey := computeScopeKey(principal, mappedID, files)
+	payloadHash := computePayloadHash(files)
+
 	h.mu.Lock()
-	existingRec, exists := h.submissions[idempotencyKey]
+	existingSubID, scopeExists := h.idempotency[scopeKey]
 	h.mu.Unlock()
-	if exists {
-		// Check if the files are identical (exact duplicate).
-		if existingRec.IdempotencyKey == idempotencyKey {
+
+	if scopeExists {
+		// An existing submission for this scope exists.
+		h.mu.Lock()
+		existingRec, recExists := h.submissions[existingSubID]
+		h.mu.Unlock()
+		if recExists && existingRec.IdempotencyKey == payloadHash {
+			// Exact duplicate: same files, same scope → return existing.
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			json.NewEncoder(w).Encode(map[string]string{
@@ -662,27 +690,58 @@ func (h *Handler) handleSubmissions(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
+		// Incompatible duplicate: same scope, different payload → 409.
+		http.Error(w, `{"error":"incompatible duplicate submission for this principal/problem; content differs from existing"}`, http.StatusConflict)
+		return
 	}
+
+	// Reserve the idempotency scope under lock before calling CSOJ.
+	// This prevents concurrent identical submits from both calling CSOJ.
+	h.mu.Lock()
+	// Double-check after acquiring lock (another goroutine may have reserved).
+	if existingSubID2, ok := h.idempotency[scopeKey]; ok {
+		h.mu.Unlock()
+		existingRec2, _ := h.submissions[existingSubID2]
+		if existingRec2 != nil && existingRec2.IdempotencyKey == payloadHash {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]string{
+				"submission_id": existingRec2.ID,
+				"status":        "duplicate",
+			})
+			return
+		}
+		http.Error(w, `{"error":"incompatible duplicate submission for this principal/problem; content differs from existing"}`, http.StatusConflict)
+		return
+	}
+	// Reserve with a placeholder to block concurrent submits.
+	h.idempotency[scopeKey] = "__pending__"
+	h.mu.Unlock()
 
 	id, err := h.submission.Submit(r.Context(), mappedID, files)
 	if err != nil {
+		// Clear the reservation so a retry can proceed.
+		h.mu.Lock()
+		delete(h.idempotency, scopeKey)
+		h.mu.Unlock()
 		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
 		return
 	}
 
-	// Save submission record with idempotency key.
+	// Save submission record.
 	if principal == "" {
 		principal = "anonymous"
 	}
 	rec := &SubmissionRecord{
-		ID:        id,
-		ProblemID: req.ProblemID,
-		Principal: principal,
-		Submitted: time.Now().UTC().Format(time.RFC3339),
+		ID:             id,
+		ProblemID:      req.ProblemID,
+		Principal:      principal,
+		Submitted:      time.Now().UTC().Format(time.RFC3339),
+		IdempotencyKey: payloadHash,
 	}
 	h.mu.Lock()
 	h.submissions[id] = rec
-	h.submissions[idempotencyKey] = rec // idempotency lookup
+	h.idempotency[scopeKey] = id // replace placeholder with real ID
 	h.mu.Unlock()
 	// Persist in store if available.
 	if s, ok := h.store.(interface{ SaveSubmission(*SubmissionRecord) error }); ok {
