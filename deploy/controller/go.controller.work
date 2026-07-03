@@ -4,5 +4,6 @@ use (
 	./cmd/controller
 	./pkg/controller
 	./pkg/lease
+	./pkg/adapter
 	./pkg/runtime
 )

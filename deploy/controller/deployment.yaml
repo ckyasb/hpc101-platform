@@ -66,6 +66,16 @@ spec:
               name: http
               protocol: TCP
           securityContext:
+          env:
+            - name: HPC101_RUNTIME_ENDPOINT
+              value: "tcp://podman-runtime.hpc101-runtime.svc.cluster.local:2375"
+            - name: CSOJ_API_URL
+              value: "http://csoj.hpc101-platform.svc.cluster.local:8080/api/v1"
+            - name: CSOJ_JWT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: csoj-jwt
+                  key: token
             allowPrivilegeEscalation: false
             capabilities:
               drop: [ALL]

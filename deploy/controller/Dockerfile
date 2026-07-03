@@ -5,6 +5,7 @@ WORKDIR /src
 COPY deploy/controller/go.controller.work ./go.work
 COPY pkg/lease/ ./pkg/lease/
 COPY pkg/controller/ ./pkg/controller/
+COPY pkg/adapter/ ./pkg/adapter/
 COPY pkg/runtime/ ./pkg/runtime/
 COPY cmd/controller/ ./cmd/controller/
 WORKDIR /src/cmd/controller
