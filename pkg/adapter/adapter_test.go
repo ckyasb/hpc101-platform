@@ -212,8 +212,8 @@ func TestSyncProblemCreate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SyncProblem: %v", err)
 	}
-	if len(calls) != 4 {
-		t.Fatalf("expected 4 calls (GET contest, POST contest, GET problem, POST problem), got %d: %v", len(calls), calls)
+	if len(calls) != 5 {
+		t.Fatalf("expected 5 calls (GET contest, POST contest, GET contest, GET problem, POST problem), got %d: %v", len(calls), calls)
 	}
 }
 
@@ -221,8 +221,9 @@ func TestSyncProblemUpdate(t *testing.T) {
 	var calls []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls = append(calls, r.Method+" "+r.URL.Path)
-		// GET returns found → should PUT
-		json.NewEncoder(w).Encode(map[string]interface{}{"code": 0})
+		// GET returns found → should PUT; return contest with problem list
+		data := map[string]interface{}{"code": 0, "data": map[string]interface{}{"id": "c1", "problems": []string{"p1"}}}
+		json.NewEncoder(w).Encode(data)
 	}))
 	defer srv.Close()
 	c := NewClient(srv.URL, "tok")
@@ -231,7 +232,7 @@ func TestSyncProblemUpdate(t *testing.T) {
 		t.Fatalf("SyncProblem: %v", err)
 	}
 	if len(calls) != 4 {
-		t.Fatalf("expected 4 calls (GET,PUT,GET,PUT), got %d: %v", len(calls), calls)
+		t.Fatalf("expected 4 calls (GET contest, PUT contest, GET contest, PUT problem), got %d: %v", len(calls), calls)
 	}
 }
 

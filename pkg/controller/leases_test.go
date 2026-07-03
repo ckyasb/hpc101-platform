@@ -557,10 +557,15 @@ func TestReleaseServiceDown(t *testing.T) {
 
 type fakeDiscovery struct {
 	containers []DiscoveryContainer
+	volumes    []DiscoveryVolume
 }
 
 func (f *fakeDiscovery) ListContainers(labels map[string]string) ([]DiscoveryContainer, error) {
 	return f.containers, nil
+}
+
+func (f *fakeDiscovery) ListVolumes(labels map[string]string) ([]DiscoveryVolume, error) {
+	return f.volumes, nil
 }
 
 func TestReattachLeases(t *testing.T) {

@@ -6,5 +6,6 @@ use (
 	./pkg/adapter
 	./pkg/controller
 	./pkg/lease
+	./pkg/runtime
 	./pkg/sshca
 )

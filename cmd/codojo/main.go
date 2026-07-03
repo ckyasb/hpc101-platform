@@ -24,7 +24,7 @@ type config struct {
 }
 
 func loadConfig() *config {
-	p := filepath.Join(os.Getenv("HOME"), ".codojo", "config.json")
+	p := filepath.Join(os.Getenv("HOME"), ".hpc101", "config.json")
 	d, err := os.ReadFile(p)
 	if err != nil {
 		return &config{}
@@ -107,7 +107,7 @@ func registerKey(args []string) {
 	}
 
 	// Also save locally for reference
-	dir := filepath.Join(os.Getenv("HOME"), ".codojo")
+	dir := filepath.Join(os.Getenv("HOME"), ".hpc101")
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		fatal("mkdir: %v", err)
 	}
@@ -150,7 +150,7 @@ func up(args []string) {
 
 		// Save the signed certificate if returned
 		if cert, ok := r["certificate"].(string); ok && cert != "" {
-			dir := filepath.Join(os.Getenv("HOME"), ".codojo")
+			dir := filepath.Join(os.Getenv("HOME"), ".hpc101")
 			os.MkdirAll(dir, 0700)
 			certPath := filepath.Join(dir, req.Principal+"-key-cert.pub")
 			if err := os.WriteFile(certPath, []byte(cert), 0600); err != nil {
@@ -181,8 +181,8 @@ func sshInfo() {
 		if cfg, ok := r["ssh_config"].(string); ok {
 			fmt.Print(cfg)
 		} else {
-			fmt.Printf("bastion: %s:%v container: %s:%v\n",
-				r["bastion_host"], r["bastion_port"], r["container_host"], r["container_port"])
+			fmt.Printf("bastion: %s:%v  container: %s:%v  config_dir: %s\n",
+				r["bastion_host"], r["bastion_port"], r["container_host"], r["container_port"], r["config_dir"])
 		}
 	} else {
 		fatal("no active environment")

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"hpc101-platform/lease"
@@ -94,14 +95,22 @@ type RegisteredKey struct {
 	PublicKey string `json:"public_key"`
 }
 
+// KeyStore persists registered SSH public keys. Implementations must be
+// thread-safe and survive controller restart.
+type KeyStore interface {
+	RegisterKey(principal, publicKey string) error
+	GetKey(principal string) (string, error)
+}
+
 // Handler serves the controller HTTP API.
 type Handler struct {
+	mu          sync.Mutex
 	drainer     BastionDrainer
 	store       LeaseStore
 	runtime     ContainerCreator
 	submission  SubmissionService
 	certSigner  CertSigner
-	keys        map[string]string            // principal → public key (in-memory key store)
+	keyStore    KeyStore
 	submissions map[string]*SubmissionRecord // submissionID → record
 	mux         *http.ServeMux
 }
@@ -133,7 +142,7 @@ func newHandler(store LeaseStore, runtime ContainerCreator, submission Submissio
 		submission:  submission,
 		drainer:     drainer,
 		certSigner:  signer,
-		keys:        make(map[string]string),
+		keyStore:    &inMemKeyStore{keys: make(map[string]string)},
 		submissions: make(map[string]*SubmissionRecord),
 		mux:         http.NewServeMux(),
 	}
@@ -146,11 +155,35 @@ func newHandler(store LeaseStore, runtime ContainerCreator, submission Submissio
 	h.mux.HandleFunc("/api/v1/submissions/", h.handleSubmissionByID)
 	h.mux.HandleFunc("/api/v1/keys", h.handleKeys)
 	h.mux.HandleFunc("/api/v1/ssh-info", h.handleSSHInfo)
+	h.mux.HandleFunc("/api/v1/bastion/roster", h.handleBastionRoster)
 	h.mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
 	})
 	return h
+}
+
+// inMemKeyStore is a simple in-memory key store with mutex protection.
+type inMemKeyStore struct {
+	mu   sync.Mutex
+	keys map[string]string
+}
+
+func (s *inMemKeyStore) RegisterKey(principal, publicKey string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.keys[principal] = publicKey
+	return nil
+}
+
+func (s *inMemKeyStore) GetKey(principal string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	k, ok := s.keys[principal]
+	if !ok {
+		return "", fmt.Errorf("no registered key for %s", principal)
+	}
+	return k, nil
 }
 
 // ServeHTTP implements http.Handler.
@@ -252,11 +285,11 @@ func (h *Handler) handleCreateService(w http.ResponseWriter, r *http.Request) {
 	// Sign a short-lived SSH certificate if we have a CA signer and the
 	// student has registered a public key.
 	if h.certSigner != nil {
-		pubKey, hasKey := h.keys[req.Principal]
-		if hasKey {
-			certPEM, err := h.certSigner.SignUserCert(pubKey, req.Principal, 8)
-			if err != nil {
-				resp["cert_error"] = err.Error()
+		pubKey, err := h.keyStore.GetKey(req.Principal)
+		if err == nil {
+			certPEM, certErr := h.certSigner.SignUserCert(pubKey, req.Principal, 8)
+			if certErr != nil {
+				resp["cert_error"] = certErr.Error()
 			} else {
 				resp["certificate"] = certPEM
 				resp["cert_path"] = fmt.Sprintf("~/.hpc101/%s-key-cert.pub", req.Principal)
@@ -299,7 +332,7 @@ func (h *Handler) handleProblems(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 		return
 	}
-	// Return unique problem IDs from submissions.
+	h.mu.Lock()
 	seen := map[string]bool{}
 	var problems []map[string]string
 	for _, rec := range h.submissions {
@@ -311,6 +344,7 @@ func (h *Handler) handleProblems(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 	}
+	h.mu.Unlock()
 	if len(problems) == 0 {
 		problems = []map[string]string{}
 	}
@@ -323,7 +357,7 @@ func (h *Handler) handleScores(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 		return
 	}
-	// Return scores from completed submissions.
+	h.mu.Lock()
 	type scoreEntry struct {
 		ProblemID   string  `json:"problem_id"`
 		Score       float64 `json:"score"`
@@ -341,6 +375,7 @@ func (h *Handler) handleScores(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 	}
+	h.mu.Unlock()
 	if len(scores) == 0 {
 		scores = []scoreEntry{}
 	}
@@ -393,12 +428,14 @@ func (h *Handler) handleSubmissions(w http.ResponseWriter, r *http.Request) {
 	if principal == "" {
 		principal = "anonymous"
 	}
+	h.mu.Lock()
 	h.submissions[id] = &SubmissionRecord{
 		ID:        id,
 		ProblemID: req.ProblemID,
 		Principal: principal,
 		Submitted: time.Now().UTC().Format(time.RFC3339),
 	}
+	h.mu.Unlock()
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
@@ -418,12 +455,15 @@ func (h *Handler) handleSubmissionByID(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Return data from our tracking store (fast path) or query adapter.
+	h.mu.Lock()
 	rec, ok := h.submissions[id]
 	if ok && rec.Result.Status != "" && rec.Result.Status != "Queued" && rec.Result.Status != "Running" {
+		h.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(rec.Result)
 		return
 	}
+	h.mu.Unlock()
 
 	// Query the adapter for current status.
 	if h.submission != nil {
@@ -432,9 +472,11 @@ func (h *Handler) handleSubmissionByID(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
 			return
 		}
+		h.mu.Lock()
 		if ok {
 			h.submissions[id].Result = *result
 		}
+		h.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(result)
 		return
@@ -473,10 +515,13 @@ func (h *Handler) registerKey(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"public_key is required"}`, http.StatusBadRequest)
 		return
 	}
-	h.keys[req.Principal] = strings.TrimSpace(req.PublicKey)
+	if err := h.keyStore.RegisterKey(req.Principal, strings.TrimSpace(req.PublicKey)); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]string{"status": "registered", "principal": req.Principal})
+	json.NewEncoder(w).Encode(map[string]string{"status": "registered", "principal": req.Principal, "config_dir": "~/.hpc101"})
 }
 
 func (h *Handler) getKey(w http.ResponseWriter, r *http.Request) {
@@ -485,8 +530,8 @@ func (h *Handler) getKey(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"invalid principal"}`, http.StatusBadRequest)
 		return
 	}
-	key, ok := h.keys[principal]
-	if !ok {
+	key, err := h.keyStore.GetKey(principal)
+	if err != nil {
 		http.Error(w, `{"error":"no registered key"}`, http.StatusNotFound)
 		return
 	}
@@ -511,15 +556,24 @@ func (h *Handler) handleSSHInfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp := map[string]interface{}{
-		"bastion_host":    "bastion.hpc101-platform.svc.cluster.local",
-		"bastion_port":    2222,
-		"bastion_user":    "bastion",
-		"container_host":  l.Host,
-		"container_port":  l.Port,
-		"container_user":  "student",
-		"principal":       principal,
-		"ssh_config":      fmt.Sprintf("Host hpc101-bastion\n  HostName bastion.hpc101-platform.svc.cluster.local\n  Port 2222\n  User bastion\n  IdentityFile ~/.hpc101/%s-key\n  CertificateFile ~/.hpc101/%s-key-cert.pub\n  IdentitiesOnly yes\n  ForwardAgent no\n\nHost hpc101-container\n  HostName %s\n  Port %d\n  User student\n  ProxyJump hpc101-bastion\n", principal, principal, l.Host, l.Port),
+		"bastion_host":   "bastion.hpc101-platform.svc.cluster.local",
+		"bastion_port":   2222,
+		"bastion_user":   "bastion",
+		"container_host": l.Host,
+		"container_port": l.Port,
+		"container_user": "student",
+		"principal":      principal,
+		"config_dir":     "~/.hpc101",
+		"ssh_config": fmt.Sprintf(
+			"Host hpc101-bastion\n  HostName bastion.hpc101-platform.svc.cluster.local\n  Port 2222\n  User bastion\n  IdentityFile ~/.hpc101/%s-key\n  CertificateFile ~/.hpc101/%s-key-cert.pub\n  IdentitiesOnly yes\n  ForwardAgent no\n\nHost hpc101-container\n  HostName %%s\n  Port %%d\n  User student\n  ProxyJump hpc101-bastion\n",
+			principal, principal,
+		),
 	}
+	// Fill in dynamic host/port in the ssh_config
+	resp["ssh_config"] = fmt.Sprintf(
+		"Host hpc101-bastion\n  HostName bastion.hpc101-platform.svc.cluster.local\n  Port 2222\n  User bastion\n  IdentityFile ~/.hpc101/%s-key\n  CertificateFile ~/.hpc101/%s-key-cert.pub\n  IdentitiesOnly yes\n  ForwardAgent no\n\nHost hpc101-container\n  HostName %s\n  Port %d\n  User student\n  ProxyJump hpc101-bastion\n",
+		principal, principal, l.Host, l.Port,
+	)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
 }

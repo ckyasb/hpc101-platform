@@ -3,8 +3,8 @@ module hpc101-platform/runtime
 go 1.25.0
 
 require (
-	github.com/docker/docker v27.5.1+incompatible
-	github.com/docker/go-connections v0.7.0
+	github.com/docker/docker v25.0.5+incompatible
+	github.com/docker/go-connections v0.5.0
 )
 
 require (
@@ -17,7 +17,6 @@ require (
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
-	github.com/moby/docker-image-spec v1.3.1 // indirect
 	github.com/moby/term v0.5.2 // indirect
 	github.com/morikuni/aec v1.1.0 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect

@@ -144,12 +144,20 @@ type SubmitRequest struct {
 }
 
 // ContestRecord represents CSOJ contest/problem projection.
+// Fields after EndTime carry the real judge configuration from the platform.
 type ContestRecord struct {
 	ContestID string `json:"contest_id"`
 	ProblemID string `json:"problem_id"`
 	Title     string `json:"title"`
 	StartTime string `json:"start_time"`
 	EndTime   string `json:"end_time"`
+	// Judge configuration — required by CSOJ for problem creation.
+	Cluster  string `json:"cluster"`
+	CPU      int    `json:"cpu"`
+	Memory   int    `json:"memory"`
+	Upload   map[string]interface{} `json:"upload"`
+	Workflow []map[string]interface{} `json:"workflow"`
+	Score    map[string]interface{} `json:"score"`
 }
 
 // --- API methods ---
@@ -352,23 +360,66 @@ func (c *Client) upsertContest(ctx context.Context, rec ContestRecord) error {
 }
 
 func (c *Client) upsertProblem(ctx context.Context, rec ContestRecord) error {
+	// Build the CSOJ problem payload from platform config. If platform
+	// config fields are empty, use safe defaults that won't overwrite
+	// real judge definitions on a PUT.
 	payload := map[string]interface{}{
-		"id": rec.ProblemID, "name": rec.Title,
-		"starttime": rec.StartTime, "endtime": rec.EndTime,
-		"cluster": "hpc101-runtime", "cpu": 1, "memory": 512,
-		"upload":   map[string]interface{}{"upload_files": []string{"*"}},
-		"workflow": []map[string]interface{}{{"image": "alpine:latest", "steps": [][]string{{"sh", "-c", "echo ok"}}}},
-		"score":    map[string]interface{}{"mode": "score"},
+		"id":        rec.ProblemID,
+		"name":      rec.Title,
+		"starttime": rec.StartTime,
+		"endtime":   rec.EndTime,
+	}
+	// Only include judge config fields that were explicitly provided.
+	if rec.Cluster != "" {
+		payload["cluster"] = rec.Cluster
+		payload["cpu"] = rec.CPU
+		payload["memory"] = rec.Memory
+		payload["upload"] = rec.Upload
+		payload["workflow"] = rec.Workflow
+		payload["score"] = rec.Score
 	}
 	body, _ := json.Marshal(payload)
+
+	// Check if the problem is already under the target contest.
+	// CSOJ stores problem IDs globally; a problem created under contest-A
+	// will be found by GET /problems/:id even if it should be contest-B's.
+	// Strategy: check the contest's problem list first, not the global lookup.
+	contestPath := "contests/" + url.PathEscape(rec.ContestID)
+	inContest := false
+	contestEnv, err := c.doCSOJ(ctx, http.MethodGet, contestPath, nil)
+	if err == nil && contestEnv != nil && contestEnv.Data != nil {
+		var contestData struct {
+			ID       string   `json:"id"`
+			Problems []string `json:"problems"`
+		}
+		if err := json.Unmarshal(contestEnv.Data, &contestData); err == nil {
+			for _, pid := range contestData.Problems {
+				if pid == rec.ProblemID {
+					inContest = true
+					break
+				}
+			}
+		}
+	}
+	// If contest not found (404), that's fine — proceed to create.
+
+	if inContest {
+		// Problem exists under this contest — safe to PUT full config.
+		_, err = c.doCSOJ(ctx, http.MethodPut, "problems/"+url.PathEscape(rec.ProblemID), body)
+		return err
+	}
+
+	// Check if problem exists globally (under a different contest).
 	path := "problems/" + url.PathEscape(rec.ProblemID)
 	exists, err := c.getResource(ctx, path)
 	if err != nil {
 		return fmt.Errorf("adapter: check problem %s: %w", rec.ProblemID, err)
 	}
 	if exists {
+		// Problem exists but not in this contest — PUT updates definition only.
 		_, err = c.doCSOJ(ctx, http.MethodPut, path, body)
 	} else {
+		// New problem — create under the target contest.
 		_, err = c.doCSOJ(ctx, http.MethodPost, "contests/"+url.PathEscape(rec.ContestID)+"/problems", body)
 	}
 	return err
