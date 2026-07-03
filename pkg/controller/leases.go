@@ -88,10 +88,10 @@ type ContainerInfo struct {
 
 // SubmissionRecord tracks a submission through its lifecycle.
 type SubmissionRecord struct {
-	ID        string          `json:"id"`
-	ProblemID string          `json:"problem_id"`
-	Principal string          `json:"principal"`
-	Submitted string          `json:"submitted_at"`
+	ID        string           `json:"id"`
+	ProblemID string           `json:"problem_id"`
+	Principal string           `json:"principal"`
+	Submitted string           `json:"submitted_at"`
 	Result    SubmissionResult `json:"result,omitempty"`
 }
 
@@ -117,16 +117,16 @@ type KeyStore interface {
 
 // Handler serves the controller HTTP API.
 type Handler struct {
-	mu           sync.Mutex
-	drainer      BastionDrainer
-	store        LeaseStore
-	runtime      ContainerCreator
-	submission   SubmissionService
-	certSigner   CertSigner
-	keyStore     KeyStore
-	problemSync  ProblemSyncService
-	submissions  map[string]*SubmissionRecord // submissionID → record
-	mux          *http.ServeMux
+	mu          sync.Mutex
+	drainer     BastionDrainer
+	store       LeaseStore
+	runtime     ContainerCreator
+	submission  SubmissionService
+	certSigner  CertSigner
+	keyStore    KeyStore
+	problemSync ProblemSyncService
+	submissions map[string]*SubmissionRecord // submissionID → record
+	mux         *http.ServeMux
 }
 
 // HandlerOpts carries optional services for the controller handler.
@@ -369,18 +369,18 @@ func (h *Handler) handleProblemSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Course    string                 `json:"course"`
-		Contest   string                 `json:"contest"`
-		ProblemID string                 `json:"problem_id"`
-		Title     string                 `json:"title"`
-		StartTime string                 `json:"start_time"`
-		EndTime   string                 `json:"end_time"`
-		Cluster   string                 `json:"cluster"`
-		CPU       int                    `json:"cpu"`
-		Memory    int                    `json:"memory"`
-		Upload    map[string]interface{} `json:"upload"`
+		Course    string                   `json:"course"`
+		Contest   string                   `json:"contest"`
+		ProblemID string                   `json:"problem_id"`
+		Title     string                   `json:"title"`
+		StartTime string                   `json:"start_time"`
+		EndTime   string                   `json:"end_time"`
+		Cluster   string                   `json:"cluster"`
+		CPU       int                      `json:"cpu"`
+		Memory    int                      `json:"memory"`
+		Upload    map[string]interface{}   `json:"upload"`
 		Workflow  []map[string]interface{} `json:"workflow"`
-		Score     map[string]interface{} `json:"score"`
+		Score     map[string]interface{}   `json:"score"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
@@ -392,7 +392,9 @@ func (h *Handler) handleProblemSync(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Require a mapping-capable store before calling the adapter.
-	mapper, hasMapper := h.store.(interface{ MapProblem(string, string, string, string) })
+	mapper, hasMapper := h.store.(interface {
+		MapProblem(string, string, string, string)
+	})
 	if !hasMapper {
 		http.Error(w, `{"error":"store does not support problem mapping"}`, http.StatusInternalServerError)
 		return
@@ -414,11 +416,11 @@ func (h *Handler) handleProblemSync(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]string{
-		"status":           "synced",
-		"course":           req.Course,
-		"contest":          req.Contest,
+		"status":              "synced",
+		"course":              req.Course,
+		"contest":             req.Contest,
 		"platform_problem_id": req.ProblemID,
-		"csoj_problem_id":  csojID,
+		"csoj_problem_id":     csojID,
 	})
 }
 
@@ -545,7 +547,9 @@ func (h *Handler) handleSubmissions(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"course and contest query parameters are required for submissions"}`, http.StatusBadRequest)
 		return
 	}
-	resolver, hasResolver := h.store.(interface{ ResolveProblem(string, string, string) string })
+	resolver, hasResolver := h.store.(interface {
+		ResolveProblem(string, string, string) string
+	})
 	if !hasResolver {
 		http.Error(w, `{"error":"store does not support problem mapping"}`, http.StatusInternalServerError)
 		return
@@ -581,7 +585,6 @@ func (h *Handler) handleSubmissions(w http.ResponseWriter, r *http.Request) {
 		_ = s.SaveSubmission(rec)
 	}
 
-
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
 	json.NewEncoder(w).Encode(map[string]string{"submission_id": id, "status": "submitted"})
@@ -604,7 +607,9 @@ func (h *Handler) handleSubmissionByID(w http.ResponseWriter, r *http.Request) {
 	rec, ok := h.submissions[id]
 	h.mu.Unlock()
 	if !ok {
-		if s, ok2 := h.store.(interface{ GetSubmission(string) (*SubmissionRecord, error) }); ok2 {
+		if s, ok2 := h.store.(interface {
+			GetSubmission(string) (*SubmissionRecord, error)
+		}); ok2 {
 			r, err := s.GetSubmission(id)
 			if err == nil {
 				rec = r
@@ -666,7 +671,9 @@ func (h *Handler) handleSubmissionLogs(w http.ResponseWriter, r *http.Request) {
 	h.mu.Unlock()
 	if rec == nil {
 		// Try store
-		if s, ok := h.store.(interface{ GetSubmission(string) (*SubmissionRecord, error) }); ok {
+		if s, ok := h.store.(interface {
+			GetSubmission(string) (*SubmissionRecord, error)
+		}); ok {
 			r, err := s.GetSubmission(id)
 			if err == nil {
 				rec = r

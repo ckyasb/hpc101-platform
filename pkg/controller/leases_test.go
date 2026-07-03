@@ -573,7 +573,6 @@ func TestReleaseServiceDown(t *testing.T) {
 	}
 }
 
-
 type fakeDiscovery struct {
 	containers      []DiscoveryContainer
 	volumes         []DiscoveryVolume
@@ -597,13 +596,17 @@ func (f *fakeDiscovery) ListNetworks(labels map[string]string) ([]DiscoveryNetwo
 }
 
 func (f *fakeDiscovery) RemoveVolume(ctx context.Context, name string) error {
-	if f.removeVolErr != nil { return f.removeVolErr }
+	if f.removeVolErr != nil {
+		return f.removeVolErr
+	}
 	f.removedVolumes = append(f.removedVolumes, name)
 	return nil
 }
 
 func (f *fakeDiscovery) RemoveNetwork(ctx context.Context, id string) error {
-	if f.removeNetErr != nil { return f.removeNetErr }
+	if f.removeNetErr != nil {
+		return f.removeNetErr
+	}
 	f.removedNetworks = append(f.removedNetworks, id)
 	return nil
 }
@@ -779,9 +782,15 @@ func TestReattachReclaimsWithCleaner(t *testing.T) {
 		},
 	}
 	result, err := ReattachLeases(s, d)
-	if err != nil { t.Fatalf("ReattachLeases: %v", err) }
-	if result.ReclaimedVolumes != 1 { t.Errorf("ReclaimedVolumes: expected 1, got %d", result.ReclaimedVolumes) }
-	if result.ReclaimedNets != 1 { t.Errorf("ReclaimedNets: expected 1, got %d", result.ReclaimedNets) }
+	if err != nil {
+		t.Fatalf("ReattachLeases: %v", err)
+	}
+	if result.ReclaimedVolumes != 1 {
+		t.Errorf("ReclaimedVolumes: expected 1, got %d", result.ReclaimedVolumes)
+	}
+	if result.ReclaimedNets != 1 {
+		t.Errorf("ReclaimedNets: expected 1, got %d", result.ReclaimedNets)
+	}
 	if len(d.removedVolumes) != 1 || d.removedVolumes[0] != "svc-orphan-1" {
 		t.Errorf("removedVolumes: %v", d.removedVolumes)
 	}
@@ -802,10 +811,16 @@ func TestReattachCleanupError(t *testing.T) {
 		removeVolErr: fmt.Errorf("volume busy"),
 	}
 	result, err := ReattachLeases(s, d)
-	if err != nil { t.Fatalf("ReattachLeases: %v", err) }
+	if err != nil {
+		t.Fatalf("ReattachLeases: %v", err)
+	}
 	// Cleanup error should not block reattach; counts are still incremented
-	if result.OrphanVolumes != 1 { t.Errorf("OrphanVolumes: %d", result.OrphanVolumes) }
-	if result.ReclaimedVolumes != 0 { t.Errorf("ReclaimedVolumes with error: %d", result.ReclaimedVolumes) }
+	if result.OrphanVolumes != 1 {
+		t.Errorf("OrphanVolumes: %d", result.OrphanVolumes)
+	}
+	if result.ReclaimedVolumes != 0 {
+		t.Errorf("ReclaimedVolumes with error: %d", result.ReclaimedVolumes)
+	}
 }
 
 // Round 10: Log endpoint regression tests
@@ -908,8 +923,12 @@ func TestReattachIncompleteLabelsSameOwner(t *testing.T) {
 		},
 	}
 	result, err := ReattachLeases(s, d)
-	if err != nil { t.Fatalf("ReattachLeases: %v", err) }
-	if result.Reattached != 1 { t.Errorf("reattached: %d", result.Reattached) }
+	if err != nil {
+		t.Fatalf("ReattachLeases: %v", err)
+	}
+	if result.Reattached != 1 {
+		t.Errorf("reattached: %d", result.Reattached)
+	}
 	// Both stale volumes should be orphaned
 	if result.OrphanVolumes != 2 {
 		t.Errorf("orphan volumes: expected 2 (different course + missing problem), got %d", result.OrphanVolumes)
@@ -930,8 +949,12 @@ func (f *fakeProblemSync) SyncProblem(ctx context.Context, course, contest, prob
 	f.lastCourse = course
 	f.lastContest = contest
 	f.lastProblem = problemID
-	if f.err != nil { return "", f.err }
-	if f.csojID != "" { return f.csojID, nil }
+	if f.err != nil {
+		return "", f.err
+	}
+	if f.csojID != "" {
+		return f.csojID, nil
+	}
 	return contest + "--" + problemID, nil
 }
 
@@ -944,12 +967,16 @@ func TestProblemSyncSuccess(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusCreated { t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String()) }
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
 	// Verify mapping was persisted
 	if mid := s.ResolveProblem("cs101", "c1", "hw1"); mid != "c1--hw1" {
 		t.Errorf("mapping not persisted: got %q", mid)
 	}
-	if fs.lastContest != "c1" || fs.lastProblem != "hw1" { t.Errorf("sync args: contest=%s problem=%s", fs.lastContest, fs.lastProblem) }
+	if fs.lastContest != "c1" || fs.lastProblem != "hw1" {
+		t.Errorf("sync args: contest=%s problem=%s", fs.lastContest, fs.lastProblem)
+	}
 }
 
 func TestProblemSyncAdapterError(t *testing.T) {
@@ -961,7 +988,9 @@ func TestProblemSyncAdapterError(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusInternalServerError { t.Errorf("expected 500, got %d", rec.Code) }
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500, got %d", rec.Code)
+	}
 }
 
 func TestProblemSyncNoMappingStore(t *testing.T) {
@@ -973,7 +1002,9 @@ func TestProblemSyncNoMappingStore(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusInternalServerError { t.Errorf("expected 500 for missing mapper, got %d", rec.Code) }
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500 for missing mapper, got %d", rec.Code)
+	}
 }
 
 func TestProblemSyncDuplicateContests(t *testing.T) {
@@ -986,7 +1017,9 @@ func TestProblemSyncDuplicateContests(t *testing.T) {
 	req1.Header.Set("Content-Type", "application/json")
 	rec1 := httptest.NewRecorder()
 	h.ServeHTTP(rec1, req1)
-	if rec1.Code != http.StatusCreated { t.Fatalf("c1: %d", rec1.Code) }
+	if rec1.Code != http.StatusCreated {
+		t.Fatalf("c1: %d", rec1.Code)
+	}
 	// Sync p1 in contest c2 — should map independently
 	fs.csojID = "c2--p1"
 	body2 := `{"course":"cs101","contest":"c2","problem_id":"p1","title":"P1"}`
@@ -994,10 +1027,16 @@ func TestProblemSyncDuplicateContests(t *testing.T) {
 	req2.Header.Set("Content-Type", "application/json")
 	rec2 := httptest.NewRecorder()
 	h.ServeHTTP(rec2, req2)
-	if rec2.Code != http.StatusCreated { t.Fatalf("c2: %d", rec2.Code) }
+	if rec2.Code != http.StatusCreated {
+		t.Fatalf("c2: %d", rec2.Code)
+	}
 	// Verify independent mappings
-	if s.ResolveProblem("cs101", "c1", "p1") != "c1--p1" { t.Error("c1 mapping wrong") }
-	if s.ResolveProblem("cs101", "c2", "p1") != "c2--p1" { t.Error("c2 mapping wrong") }
+	if s.ResolveProblem("cs101", "c1", "p1") != "c1--p1" {
+		t.Error("c1 mapping wrong")
+	}
+	if s.ResolveProblem("cs101", "c2", "p1") != "c2--p1" {
+		t.Error("c2 mapping wrong")
+	}
 }
 
 func TestProblemSyncMissingService(t *testing.T) {
@@ -1008,5 +1047,7 @@ func TestProblemSyncMissingService(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusServiceUnavailable { t.Errorf("expected 503, got %d", rec.Code) }
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503, got %d", rec.Code)
+	}
 }
