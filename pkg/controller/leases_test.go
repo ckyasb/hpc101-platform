@@ -229,3 +229,56 @@ func TestSubmitHandlerServiceError(t *testing.T) {
 		t.Errorf("expected 500, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestSubmitHandlerMalformedJSON(t *testing.T) {
+	h := NewHandler(memStore{}, nil, &fakeSubmission{})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/submissions", strings.NewReader(`not json`))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", rec.Code)
+	}
+}
+
+func TestSubmitHandlerBadBase64(t *testing.T) {
+	h := NewHandler(memStore{}, nil, &fakeSubmission{})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/submissions", strings.NewReader(`{"problem_id":"p1","files":{"a":"!!!"}}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for bad base64, got %d", rec.Code)
+	}
+}
+
+func TestSubmitHandlerEmptyFileName(t *testing.T) {
+	h := NewHandler(memStore{}, nil, &fakeSubmission{})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/submissions", strings.NewReader(`{"problem_id":"p1","files":{"":"YQ=="}}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for empty file name, got %d", rec.Code)
+	}
+}
+
+func TestSubmitHandlerWhitespaceProblemID(t *testing.T) {
+	h := NewHandler(memStore{}, nil, &fakeSubmission{})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/submissions", strings.NewReader(`{"problem_id":"   ","files":{"a":"YQ=="}}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for whitespace problem_id, got %d", rec.Code)
+	}
+}
+
+func TestSubmitHandlerMethodRejection(t *testing.T) {
+	h := NewHandler(memStore{}, nil, &fakeSubmission{})
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/submissions", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405, got %d", rec.Code)
+	}
+}

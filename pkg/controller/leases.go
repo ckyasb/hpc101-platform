@@ -240,12 +240,16 @@ func (h *Handler) handleSubmissions(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
 		return
 	}
-	if req.ProblemID == "" || len(req.Files) == 0 {
+	if strings.TrimSpace(req.ProblemID) == "" || len(req.Files) == 0 {
 		http.Error(w, `{"error":"problem_id and files are required"}`, http.StatusBadRequest)
 		return
 	}
 	files := make(map[string][]byte)
 	for name, b64 := range req.Files {
+		if strings.TrimSpace(name) == "" {
+			http.Error(w, `{"error":"file name cannot be empty"}`, http.StatusBadRequest)
+			return
+		}
 		data, err := base64.StdEncoding.DecodeString(b64)
 		if err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"bad base64 for %s"}`, name), http.StatusBadRequest)
