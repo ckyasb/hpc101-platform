@@ -187,7 +187,7 @@ func (c *Client) Submit(ctx context.Context, req SubmitRequest) (string, error) 
 		return "", fmt.Errorf("adapter: parse submit response: %w (body: %s)", err, string(body))
 	}
 	if env.Code != 0 {
-		return "", fmt.Errorf("adapter: CSOJ rejected submit (code=%d): %s", env.Code, env.Message)
+		return "", newCSOJError(http.MethodPost, fmt.Sprintf("problems/%s/submit", req.ProblemID), resp.StatusCode, env)
 	}
 
 	var data struct {
@@ -225,7 +225,7 @@ func (c *Client) QueryResult(ctx context.Context, submissionID string) (*Submiss
 		return nil, fmt.Errorf("adapter: parse query response: %w", err)
 	}
 	if env.Code != 0 {
-		return nil, fmt.Errorf("adapter: CSOJ rejected query (code=%d): %s", env.Code, env.Message)
+		return nil, newCSOJError(http.MethodGet, fmt.Sprintf("submissions/%s", submissionID), resp.StatusCode, env)
 	}
 
 	var sub Submission
@@ -312,30 +312,30 @@ func (c *Client) doCSOJ(ctx context.Context, method, path string, body []byte) (
 	if err != nil {
 		return nil, fmt.Errorf("adapter: read %s %s: %w", method, path, err)
 	}
-		var env csjResponse
-		if err := json.Unmarshal(respBody, &env); err != nil {
-			return nil, fmt.Errorf("adapter: parse %s %s: %w", method, path, err)
-		}
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 || env.Code != 0 {
-			return nil, newCSOJError(method, path, resp.StatusCode, env)
-		}
-		return &env, nil
+	var env csjResponse
+	if err := json.Unmarshal(respBody, &env); err != nil {
+		return nil, fmt.Errorf("adapter: parse %s %s: %w", method, path, err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 || env.Code != 0 {
+		return nil, newCSOJError(method, path, resp.StatusCode, env)
+	}
+	return &env, nil
 	return &env, nil
 }
 
 // getResource returns (true, nil) if the resource exists, (false, nil) for HTTP 404
 // (resource genuinely missing), and (false, error) for transport/5xx/malformed responses.
 func (c *Client) getResource(ctx context.Context, path string) (bool, error) {
-		_, err := c.doCSOJ(ctx, http.MethodGet, path, nil)
-		if err != nil {
-			var csjErr *CSOJError
-			if errors.As(err, &csjErr) && csjErr.HTTPStatus == 404 {
-				return false, nil
-			}
-			return false, err
+	_, err := c.doCSOJ(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		var csjErr *CSOJError
+		if errors.As(err, &csjErr) && csjErr.HTTPStatus == 404 {
+			return false, nil
 		}
-		return true, nil
+		return false, err
 	}
+	return true, nil
+}
 func (c *Client) upsertContest(ctx context.Context, rec ContestRecord) error {
 	payload := map[string]interface{}{"id": rec.ContestID, "name": rec.ContestID, "starttime": rec.StartTime, "endtime": rec.EndTime}
 	body, _ := json.Marshal(payload)
