@@ -67,15 +67,32 @@ func (c *Client) CreateContainer(ctx context.Context, req CreateContainerRequest
 			"2222/tcp": struct{}{},
 		},
 	}
+	// Create a persistent Docker volume for /home/student.
+	homeVolName := req.Name + "-home"
+	_, volErr := c.cli.VolumeCreate(ctx, volume.CreateOptions{
+		Name:   homeVolName,
+		Labels: req.Labels,
+	})
+	if volErr != nil {
+		return nil, fmt.Errorf("runtime: create home volume %s: %w", homeVolName, volErr)
+	}
+
 	hostCfg := &container.HostConfig{
 		PortBindings: nat.PortMap{
 			"2222/tcp": []nat.PortBinding{{HostIP: "0.0.0.0", HostPort: "0"}},
 		},
-		Mounts: []mount.Mount{{
-			Type:         mount.TypeTmpfs,
-			Target:       "/tmp",
-			TmpfsOptions: &mount.TmpfsOptions{SizeBytes: 256 * 1024 * 1024},
-		}},
+		Mounts: []mount.Mount{
+			{
+				Type:   mount.TypeVolume,
+				Source: homeVolName,
+				Target: "/home/student",
+			},
+			{
+				Type:         mount.TypeTmpfs,
+				Target:       "/tmp",
+				TmpfsOptions: &mount.TmpfsOptions{SizeBytes: 256 * 1024 * 1024},
+			},
+		},
 		Resources: container.Resources{
 			NanoCPUs: req.CPU,
 			Memory:   req.MemoryMB * 1024 * 1024,
