@@ -4,7 +4,7 @@
 # Build:  docker build -f deploy/container/Dockerfile -t hpc101-platform/container:latest .
 # Run:    docker run -e HPC101_SSH_KEY="ssh-ed25519 AAAA..." \
 #           -v <student>-home:/home/student hpc101-platform/container:latest
-FROM debian:12-slim
+FROM debian:12
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     openssh-server \
