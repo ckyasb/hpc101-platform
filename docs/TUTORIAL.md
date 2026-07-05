@@ -2,7 +2,7 @@
 
 ## 概述
 
-HPC101 是课程容器化平台。你通过一个 `codojo` 命令行工具完成：
+HPC101 是课程容器化平台。你通过一个 `hpc101` 命令行工具完成：
 
 - 申请一个交互式开发容器（带 sshd）
 - 通过 SSH（bastion 跳板）连接进入容器
@@ -15,14 +15,14 @@ HPC101 是课程容器化平台。你通过一个 `codojo` 命令行工具完成
 ```
 你的笔记本
    │
-   │ 1) codojo up        （HTTPS 申请容器，平台签发 8h SSH 证书）
+   │ 1) hpc101 up        （HTTPS 申请容器，平台签发 8h SSH 证书）
    │ 2) ssh hpc101-container  （经 bastion 跳板进入容器）
    ▼
 SSH Bastion  ──ProxyJump──►  你的开发容器（sshd, svc- 前缀）
    ▲                              │
    │                              │ 3) 在容器里写代码
 平台 Controller                  │
-   │                             │ 4) codojo submit（退到笔记本或留在容器里都行）
+   │                             │ 4) hpc101 submit（退到笔记本或留在容器里都行）
    ▼                             ▼
 CSOJ Adapter ──► CSOJ（评测）
 ```
@@ -34,7 +34,7 @@ CSOJ Adapter ──► CSOJ（评测）
 | 网络 | 能访问 `clusters.zju.edu.cn`（校内网或 VPN） |
 | SSH | 已有一对 SSH 密钥（`id_ed25519` 或 `id_rsa`） |
 | 系统 | macOS（Intel / Apple Silicon）、Linux x86_64、Windows x86_64 |
-| 工具 | `codojo` CLI（见下节安装） |
+| 工具 | `hpc101` CLI（见下节安装） |
 
 > 如果你还没有 SSH 密钥，先生成：
 > ```bash
@@ -42,39 +42,39 @@ CSOJ Adapter ──► CSOJ（评测）
 > # 一路回车，默认保存到 ~/.ssh/id_ed25519
 > ```
 
-## 2. 安装 codojo CLI
+## 2. 安装 hpc101 CLI
 
-从平台获取对应你系统的二进制文件，重命名为 `codojo` 并放入 `PATH`。
+从平台获取对应你系统的二进制文件，重命名为 `hpc101` 并放入 `PATH`。
 
 **macOS / Linux：**
 
 ```bash
-mv codojo-darwin-arm64 /usr/local/bin/codojo    # 改成你对应平台的文件名
-chmod +x /usr/local/bin/codojo
-codojo    # 应输出命令列表
+mv hpc101-darwin-arm64 /usr/local/bin/hpc101    # 改成你对应平台的文件名
+chmod +x /usr/local/bin/hpc101
+hpc101    # 应输出命令列表
 ```
 
 **Windows (PowerShell)：**
 
 ```powershell
-Move-Item .\codojo-windows-amd64.exe C:\Users\<你的用户名>\codojo.exe
-.\codojo.exe
+Move-Item .\hpc101-windows-amd64.exe C:\Users\<你的用户名>\hpc101.exe
+.\hpc101.exe
 ```
 
 ## 3. 配置环境变量（一次性）
 
-`codojo` 需要知道平台 Controller 的公网地址。**必须设置**，否则会用集群内部地址（仅 Pod 内可达）。
+`hpc101` 需要知道平台 Controller 的公网地址。**必须设置**，否则会用集群内部地址（仅 Pod 内可达）。
 
 ```bash
 # macOS / Linux：追加到 ~/.bashrc 或 ~/.zshrc
-export CODOJO_CONTROLLER_URL="https://clusters.zju.edu.cn/hpc101"
+export HPC101_CONTROLLER_URL="https://clusters.zju.edu.cn/hpc101"
 ```
 
 ```powershell
 # Windows PowerShell
-$env:CODOJO_CONTROLLER_URL = "https://clusters.zju.edu.cn/hpc101"
+$env:HPC101_CONTROLLER_URL = "https://clusters.zju.edu.cn/hpc101"
 # 或写入用户环境变量（永久）：
-[Environment]::SetEnvironmentVariable("CODOJO_CONTROLLER_URL", "https://clusters.zju.edu.cn/hpc101", "User")
+[Environment]::SetEnvironmentVariable("HPC101_CONTROLLER_URL", "https://clusters.zju.edu.cn/hpc101", "User")
 ```
 
 验证连通性：
@@ -89,7 +89,7 @@ curl -sk https://clusters.zju.edu.cn/hpc101/healthz
 平台需要你的 SSH 公钥来配置容器的免密登录，并用它签发短期证书。
 
 ```bash
-codojo register-key ~/.ssh/id_ed25519
+hpc101 register-key ~/.ssh/id_ed25519
 ```
 
 输出：
@@ -108,10 +108,10 @@ key registered with controller (identity: /home/ckyasb/.ssh/id_ed25519)
 ## 5. 启动开发环境
 
 ```bash
-codojo up <镜像名> [课程名] [题目名]
+hpc101 up <镜像名> [课程名] [题目名]
 
 # 示例：启动带 sshd 的标准开发环境
-codojo up hpc101-platform/container:latest cs101 lab1
+hpc101 up hpc101-platform/container:latest cs101 lab1
 ```
 
 成功后会返回：
@@ -132,7 +132,7 @@ cert saved: /home/ckyasb/.hpc101/ckyasb-key-cert.pub
 ### 6.1 查看连接信息
 
 ```bash
-codojo ssh-info
+hpc101 ssh-info
 ```
 
 输出（已自动填入你的私钥和证书路径）：
@@ -159,7 +159,7 @@ Host hpc101-container
 把上面的输出追加到你的 SSH 配置文件：
 
 ```bash
-codojo ssh-info >> ~/.ssh/config
+hpc101 ssh-info >> ~/.ssh/config
 ```
 
 > **Windows**：SSH 配置文件在 `C:\Users\<你的用户名>\.ssh\config`，手动把输出粘贴进去。
@@ -196,8 +196,8 @@ scp hpc101-container:~/output.log ./
 在容器里写好代码后，退出容器（或另开终端），提交评测：
 
 ```bash
-# 语法：codojo submit <课程> <竞赛> <题目ID> <文件...>
-codojo submit cs101 contest1 hello solve.py
+# 语法：hpc101 submit <课程> <竞赛> <题目ID> <文件...>
+hpc101 submit cs101 contest1 hello solve.py
 ```
 
 返回：
@@ -214,10 +214,10 @@ submitted: {"submission_id":"abc-123-def","status":"submitted"}
 
 ```bash
 # 列出所有已完成的评测
-codojo score
+hpc101 score
 
 # 查看特定提交的结果（会轮询直到完成）
-codojo score <submission-id>
+hpc101 score <submission-id>
 ```
 
 输出示例：
@@ -234,7 +234,7 @@ info: {"test_cases": [...]}
 ## 9. 查看评测日志
 
 ```bash
-codojo logs <submission-id>
+hpc101 logs <submission-id>
 ```
 
 会流式输出评测容器的日志（stdout + stderr），用于调试。
@@ -242,7 +242,7 @@ codojo logs <submission-id>
 ## 10. 列出可用题目
 
 ```bash
-codojo problem
+hpc101 problem
 ```
 
 输出已同步到平台的题目列表。
@@ -252,7 +252,7 @@ codojo problem
 用完后**务必释放**，否则会占用资源直到超时自动释放：
 
 ```bash
-codojo release
+hpc101 release
 ```
 
 输出：
@@ -272,22 +272,22 @@ released: Reclaimed
 # ===== 一次性设置 =====
 
 # 1. 配置环境变量（追加到 ~/.bashrc 或 ~/.zshrc）
-export CODOJO_CONTROLLER_URL="https://clusters.zju.edu.cn/hpc101"
+export HPC101_CONTROLLER_URL="https://clusters.zju.edu.cn/hpc101"
 
 # 2. 生成 SSH 密钥（如果没有）
 ssh-keygen -t ed25519 -C "you@example.com"
 
 # 3. 注册公钥
-codojo register-key ~/.ssh/id_ed25519
+hpc101 register-key ~/.ssh/id_ed25519
 
 # ===== 日常使用 =====
 
 # 4. 启动开发环境
-codojo up hpc101-platform/container:latest cs101 lab1
+hpc101 up hpc101-platform/container:latest cs101 lab1
 # → ready: dedicated-judge-runtime.hpc101-runtime.svc.cluster.local:32772
 
 # 5. 配置 SSH
-codojo ssh-info >> ~/.ssh/config
+hpc101 ssh-info >> ~/.ssh/config
 
 # 6. 连接容器
 ssh hpc101-container
@@ -298,38 +298,38 @@ python3 solve.py        # 本地测试
 
 # 8. 退出容器，提交评测
 exit
-codojo submit cs101 contest1 hello solve.py
+hpc101 submit cs101 contest1 hello solve.py
 # → submission_id: abc-123-def
 
 # 9. 查看结果
-codojo score abc-123-def
+hpc101 score abc-123-def
 # → Success, score=100
 
 # 10. 查看日志
-codojo logs abc-123-def
+hpc101 logs abc-123-def
 
 # 11. 结束工作，释放环境
-codojo release
+hpc101 release
 ```
 
 ## 命令速查表
 
 | 命令 | 说明 | 示例 |
 |------|------|------|
-| `register-key <path>` | 注册 SSH 公钥（首次） | `codojo register-key ~/.ssh/id_ed25519` |
-| `up <image> [course] [problem]` | 启动开发容器 | `codojo up hpc101-platform/container:latest cs101 lab1` |
-| `ssh-info` | 查看容器 SSH 连接信息 | `codojo ssh-info` |
-| `release` | 释放容器 | `codojo release` |
-| `submit <course> <contest> <pid> <files...>` | 提交评测 | `codojo submit cs101 contest1 hello solve.py` |
-| `score [submission-id]` | 查看分数 | `codojo score abc-123` |
-| `logs <submission-id>` | 查看评测日志 | `codojo logs abc-123` |
-| `problem` | 列出可用题目 | `codojo problem` |
+| `register-key <path>` | 注册 SSH 公钥（首次） | `hpc101 register-key ~/.ssh/id_ed25519` |
+| `up <image> [course] [problem]` | 启动开发容器 | `hpc101 up hpc101-platform/container:latest cs101 lab1` |
+| `ssh-info` | 查看容器 SSH 连接信息 | `hpc101 ssh-info` |
+| `release` | 释放容器 | `hpc101 release` |
+| `submit <course> <contest> <pid> <files...>` | 提交评测 | `hpc101 submit cs101 contest1 hello solve.py` |
+| `score [submission-id]` | 查看分数 | `hpc101 score abc-123` |
+| `logs <submission-id>` | 查看评测日志 | `hpc101 logs abc-123` |
+| `problem` | 列出可用题目 | `hpc101 problem` |
 
 ## 环境变量参考
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `CODOJO_CONTROLLER_URL` | `http://controller.hpc101-platform.svc.cluster.local:8080`（集群内部） | Controller API 地址，**从笔记本使用必须设置为公网地址** |
+| `HPC101_CONTROLLER_URL` | `http://controller.hpc101-platform.svc.cluster.local:8080`（集群内部） | Controller API 地址，**从笔记本使用必须设置为公网地址** |
 | `USER` | 当前系统用户名 | 学生身份标识（principal） |
 
 ## 资源超时说明
@@ -343,22 +343,22 @@ codojo release
 
 ## 常见问题
 
-### Q1: `codojo up` 提示 "lease conflict"？
+### Q1: `hpc101 up` 提示 "lease conflict"？
 
 你已有一个活跃的开发环境。每个学生同时只能拥有一个容器。
 
 ```bash
-codojo release    # 先释放旧的
-codojo up ...     # 再申请新的
+hpc101 release    # 先释放旧的
+hpc101 up ...     # 再申请新的
 ```
 
 ### Q2: SSH 连接被拒绝？
 
-1. 确认已执行 `codojo register-key` 注册公钥
-2. 确认容器状态为 Active（`codojo ssh-info` 能正常返回）
-3. 确认 `~/.ssh/config` 已包含 `codojo ssh-info` 的输出
+1. 确认已执行 `hpc101 register-key` 注册公钥
+2. 确认容器状态为 Active（`hpc101 ssh-info` 能正常返回）
+3. 确认 `~/.ssh/config` 已包含 `hpc101 ssh-info` 的输出
 4. 确认使用的是注册时对应的私钥（`IdentityFile` 路径正确）
-5. 证书可能已过期（8 小时），重新 `codojo up` 即可获取新证书
+5. 证书可能已过期（8 小时），重新 `hpc101 up` 即可获取新证书
 
 ### Q3: SSH 提示 "Permission denied (publickey)"？
 
@@ -368,19 +368,19 @@ codojo up ...     # 再申请新的
 
 ### Q4: 评测提交失败？
 
-- 确认课程和题目已同步到 CSOJ（`codojo problem` 能看到题目）
+- 确认课程和题目已同步到 CSOJ（`hpc101 problem` 能看到题目）
 - 确认文件格式正确（文本文件，非二进制）
-- 查看 `codojo logs <submission-id>` 了解具体错误
+- 查看 `hpc101 logs <submission-id>` 了解具体错误
 - 提交被自动禁止（auto-ban）通常是因为文件名包含非法字符，请使用纯英文文件名
 
 ### Q5: 证书过期了怎么办？
 
-SSH 证书默认 8 小时有效。过期后重新执行 `codojo up` 即可获取新证书（如果容器还在，会返回已有容器信息并重新签发证书）。
+SSH 证书默认 8 小时有效。过期后重新执行 `hpc101 up` 即可获取新证书（如果容器还在，会返回已有容器信息并重新签发证书）。
 
 ### Q6: 如何查看我当前的容器？
 
 ```bash
-codojo ssh-info
+hpc101 ssh-info
 # 如果有活跃容器，会输出连接信息
 # 如果没有，会提示 "no active environment"
 ```
@@ -392,26 +392,26 @@ codojo ssh-info
 - 如果在校外且无法 VPN，可使用 SSH 隧道：
   ```bash
   ssh -L 8080:controller.hpc101-platform.svc.cluster.local:8080 root@172.25.4.11 -N
-  export CODOJO_CONTROLLER_URL="http://localhost:8080"
+  export HPC101_CONTROLLER_URL="http://localhost:8080"
   ```
 
-### Q8: Windows 下 `codojo ssh-info >> ~/.ssh/config` 报错？
+### Q8: Windows 下 `hpc101 ssh-info >> ~/.ssh/config` 报错？
 
 Windows 没有 `~` 简写。手动操作：
 
 ```powershell
-codojo ssh-info > $env:USERPROFILE\.ssh\config.tmp
+hpc101 ssh-info > $env:USERPROFILE\.ssh\config.tmp
 Get-Content $env:USERPROFILE\.ssh\config.tmp | Add-Content $env:USERPROFILE\.ssh\config
 Remove-Item $env:USERPROFILE\.ssh\config.tmp
 ```
 
-或手动把 `codojo ssh-info` 的输出粘贴到 `C:\Users\<你的用户名>\.ssh\config` 末尾。
+或手动把 `hpc101 ssh-info` 的输出粘贴到 `C:\Users\<你的用户名>\.ssh\config` 末尾。
 
 ## 故障排查
 
 ### 查看详细错误
 
-`codojo` 的错误信息通常已经足够明确。如果遇到不明确的错误，可以用 `curl` 直接测试 Controller：
+`hpc101` 的错误信息通常已经足够明确。如果遇到不明确的错误，可以用 `curl` 直接测试 Controller：
 
 ```bash
 # 测试连通性
@@ -428,8 +428,8 @@ curl -s "https://clusters.zju.edu.cn/hpc101/api/v1/leases?principal=$(whoami)"
 | HTTP 码 | 含义 | 解决方法 |
 |---------|------|----------|
 | 400 | 请求参数错误 | 检查命令参数 |
-| 404 | 无活跃容器 | 先执行 `codojo up` |
-| 409 | 容器冲突 | 先 `codojo release` |
+| 404 | 无活跃容器 | 先执行 `hpc101 up` |
+| 409 | 容器冲突 | 先 `hpc101 release` |
 | 500 | 服务器错误 | 联系管理员，附上时间点 |
 | 503 | 服务不可用 | Controller 或 Runtime 未就绪，稍后重试 |
 
@@ -439,5 +439,5 @@ curl -s "https://clusters.zju.edu.cn/hpc101/api/v1/leases?principal=$(whoami)"
 
 1. 执行的完整命令
 2. 错误输出（完整）
-3. `codojo ssh-info` 的输出（如能执行）
+3. `hpc101 ssh-info` 的输出（如能执行）
 4. 时间点

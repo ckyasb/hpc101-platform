@@ -14,7 +14,7 @@ import (
 )
 
 func getControllerURL() string {
-	if u := os.Getenv("CODOJO_CONTROLLER_URL"); u != "" {
+	if u := os.Getenv("HPC101_CONTROLLER_URL"); u != "" {
 		return u
 	}
 	return "http://controller.hpc101-platform.svc.cluster.local:8080"
@@ -75,7 +75,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "codojo: hpc101-platform CLI (no kubeconfig)")
+	fmt.Fprintln(os.Stderr, "hpc101: hpc101-platform CLI (no kubeconfig)")
 	for _, s := range []string{
 		"  register-key <path>",
 		"  up <image> [course] [problem]",

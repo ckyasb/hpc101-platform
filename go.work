@@ -2,7 +2,7 @@ go 1.25.0
 
 use (
 	./cmd/bastion-mgmt
-	./cmd/codojo
+	./cmd/hpc101
 	./cmd/controller
 	./pkg/adapter
 	./pkg/controller
