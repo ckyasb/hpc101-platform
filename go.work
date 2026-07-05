@@ -9,5 +9,4 @@ use (
 	./pkg/lease
 	./pkg/runtime
 	./pkg/sshca
-	./test/e2e
 )
