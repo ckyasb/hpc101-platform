@@ -150,16 +150,3 @@ go test ./pkg/controller/ ./pkg/lease/ ./pkg/adapter/
 docker build -f deploy/container/Dockerfile -t hpc101-platform/container:latest .
 ```
 
-## 当前状态
-
-| 功能 | 状态 | 备注 |
-|------|------|------|
-| `hpc101 up` 创建容器 | ✅ | 通过公网 HTTPS，已在生产验证 |
-| `hpc101 register-key` | ✅ | 注册后自动签发 8h SSH 证书 |
-| `hpc101 ssh-info` | ✅ | 同时输出校园网(22)和公网(443)配置 |
-| `hpc101 release` | ✅ | 三层回收：停止容器 → 删除卷 → 清理防火墙 |
-| `hpc101 submit/score/logs` | ⚠️ | 需 CSOJ 在后端正常运行 |
-| SSH 进容器 | ⚠️ | 需 OpenNG 添加 `bastion` 路由 |
-| 容器持久化 | ✅ | `/home/student` Docker Volume，释放前数据不丢 |
-| 自动释放 | ✅ | 最大 8h + 空闲 30min + 手动 |
-| 容器安全加固 | ✅ | m800 `containers.conf`：no_new_privileges, CapDrop ALL, seccomp |
