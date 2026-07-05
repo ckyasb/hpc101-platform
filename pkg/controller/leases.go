@@ -1000,10 +1000,18 @@ func (h *Handler) getKey(w http.ResponseWriter, r *http.Request) {
 
 // handleSSHInfo handles GET /api/v1/ssh-info — return bastion ProxyJump config.
 //
-// The bastion host/port default to the internal k8s DNS. Set
-// HPC101_BASTION_PUBLIC_HOST / HPC101_BASTION_PUBLIC_PORT to
-// override with a hostname reachable from student laptops (e.g.
-// the SSH gateway or a NodePort/LoadBalancer address).
+// Supports two network scenarios via environment variables:
+//
+//   Campus (internal, port 22):
+//     HPC101_BASTION_CAMPUS_HOST  e.g. "clusters.zju.edu.cn"
+//     HPC101_BASTION_CAMPUS_PORT  e.g. "22"
+//
+//   Public (gateway, port 443):
+//     HPC101_BASTION_PUBLIC_HOST  e.g. "clusters.zju.edu.cn"
+//     HPC101_BASTION_PUBLIC_PORT  e.g. "443"
+//
+// If neither is set, defaults to internal k8s DNS (cluster-internal only).
+// When both are set, both configs are emitted.
 func (h *Handler) handleSSHInfo(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
@@ -1020,39 +1028,83 @@ func (h *Handler) handleSSHInfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	bastionHost := "bastion.hpc101-platform.svc.cluster.local"
-	if v := os.Getenv("HPC101_BASTION_PUBLIC_HOST"); v != "" {
-		bastionHost = v
+	var configs []string
+
+	// --- Campus network entry (port 22) ---
+	if ch := os.Getenv("HPC101_BASTION_CAMPUS_HOST"); ch != "" {
+		cp := os.Getenv("HPC101_BASTION_CAMPUS_PORT")
+		if cp == "" { cp = "22" }
+		configs = append(configs, fmt.Sprintf(
+			"# Campus network (校园网)\n"+
+				"Host hpc101-bastion-campus\n"+
+				"  HostName %s\n  Port %s\n  User %s+bastion\n"+
+				"  IdentityFile ~/.hpc101/%s-key\n"+
+				"  CertificateFile ~/.hpc101/%s-key-cert.pub\n"+
+				"  IdentitiesOnly yes\n  ForwardAgent no\n",
+			ch, cp, principal, principal, principal))
 	}
-	bastionPort := "2222"
-	if v := os.Getenv("HPC101_BASTION_PUBLIC_PORT"); v != "" {
-		bastionPort = v
+
+	// --- Public network entry (port 443) ---
+	if ph := os.Getenv("HPC101_BASTION_PUBLIC_HOST"); ph != "" {
+		pp := os.Getenv("HPC101_BASTION_PUBLIC_PORT")
+		if pp == "" { pp = "443" }
+		configs = append(configs, fmt.Sprintf(
+			"# Public network (公网)\n"+
+				"Host hpc101-bastion-public\n"+
+				"  HostName %s\n  Port %s\n  User %s+bastion\n"+
+				"  IdentityFile ~/.hpc101/%s-key\n"+
+				"  CertificateFile ~/.hpc101/%s-key-cert.pub\n"+
+				"  IdentitiesOnly yes\n  ForwardAgent no\n",
+			ph, pp, principal, principal, principal))
+	}
+
+	// --- Fallback: internal k8s DNS ---
+	fallback := fmt.Sprintf(
+		"Host hpc101-bastion\n"+
+			"  HostName bastion.hpc101-platform.svc.cluster.local\n  Port 2222\n"+
+			"  User bastion\n"+
+			"  IdentityFile ~/.hpc101/%s-key\n"+
+			"  CertificateFile ~/.hpc101/%s-key-cert.pub\n"+
+			"  IdentitiesOnly yes\n  ForwardAgent no\n",
+		principal, principal)
+
+	// --- Container entry (same for all) ---
+	container := fmt.Sprintf(
+		"Host hpc101-container\n"+
+			"  HostName %s\n  Port %d\n  User student\n"+
+			"  ProxyJump %%s\n",
+		l.Host, l.Port)
+
+	var sshConfig string
+	if len(configs) > 0 {
+		clouds := ""
+		for _, c := range configs {
+			clouds += c + "\n"
+		}
+		// Campus version uses campus bastion, public uses public bastion.
+		// Also include a generic "auto" version that tries campus first.
+		sshConfig = clouds + "\n" +
+			containerWithJump("# Campus → container", container, "hpc101-bastion-campus") + "\n" +
+			containerWithJump("# Public → container", container, "hpc101-bastion-public")
+	} else {
+		sshConfig = fallback + "\n\n" +
+			containerWithJump("", container, "hpc101-bastion")
 	}
 
 	resp := map[string]interface{}{
-		"bastion_host":   bastionHost,
-		"bastion_port":   bastionPort,
-		"bastion_user":   "bastion",
 		"container_host": l.Host,
 		"container_port": l.Port,
 		"container_user": "student",
 		"principal":      principal,
 		"config_dir":     "~/.hpc101",
+		"ssh_config":     sshConfig,
 	}
-	// If using a public gateway (not internal DNS), the bastion User
-	// encodes the routing info that the SSH gateway needs: <principal>+bastion.
-	bastionUser := "bastion"
-	if bastionHost != "bastion.hpc101-platform.svc.cluster.local" {
-		bastionUser = principal + "+bastion"
-	}
-
-	sshCfg := fmt.Sprintf(
-		"Host hpc101-bastion\n  HostName %s\n  Port %s\n  User %s\n"+
-			"  IdentityFile ~/.hpc101/%s-key\n  CertificateFile ~/.hpc101/%s-key-cert.pub\n"+
-			"  IdentitiesOnly yes\n  ForwardAgent no\n\n"+
-			"Host hpc101-container\n  HostName %%s\n  Port %%d\n  User student\n  ProxyJump hpc101-bastion\n",
-		bastionHost, bastionPort, bastionUser, principal, principal)
-	resp["ssh_config"] = fmt.Sprintf(sshCfg, l.Host, l.Port)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+}
+
+func containerWithJump(comment, tmpl, jump string) string {
+	c := ""
+	if comment != "" { c = comment + "\n" }
+	return c + fmt.Sprintf(tmpl, jump)
 }
